@@ -396,62 +396,61 @@ TEST_PARAMS = LoTRSParams(
 # Production parameter set: 50-of-100 threshold signature.
 # Matches estimator/lotrs_estimate.py (output:
 # estimator/LoTRS-Estimate-Output-N100T50.txt).
-# Signature size ~ 34 KB, ~ 12.3 sequential signing attempts.
-# Expected post-quantum security ~ 87 bits (DualMS ASIS Variant 2).
-#
-# The lattice dimensions shrunk substantially from the earlier paper
-# draft (k=12, l=12, l'=13, n̂=12, k̂=11) to these values after the
-# tail-factor re-analysis — smaller bounds B_{f_0}, B_{g_0} allow the
-# MSIS to stay hard at lower ranks.
+# Signature size ~ 35 KB, ~ 3 expected signing attempts (estimator
+# heuristic; empirical attempts may be slightly higher because the
+# signer also performs a w̃₀-stability restart).
+# Expected post-quantum security ~ 87 bits (Binary-proof ASIS),
+# ~ 90 bits (DualMS ASIS).
 PRODUCTION_PARAMS = LoTRSParams(
     name="lotrs-128",
     d=128,
-    q=274877906837,      # largest prime ≤ 2^38 with q ≡ 5 mod 8
-    q_hat=8589934237,    # largest prime ≤ 2^33 with q_hat ≡ 5 mod 8
+    q=274877906837,      # largest prime < 2^38 with q ≡ 5 mod 8
+    q_hat=274877906837,  # largest prime < 2^38 with q_hat ≡ 5 mod 8
+                         # (prime_5_mod_8(38) in lotrs_estimate.py)
     kappa=1,
     beta=100,
     T=50,
     k=12,
     l=5,
     l_prime=6,
-    n_hat=10,
+    n_hat=11,
     k_hat=8,
     w=31,
     eta=1,
-    phi=587.5,           # 11.75 * T  per lotrs_estimate.py:100
-    phi_a=50.0,          # fixed across T  per lotrs_estimate.py:55
+    phi=1100.0,          # 22 * T  per lotrs_estimate.py
+    phi_a=24.0,          # fixed across T
     phi_b=4.0,
-    K_A=20,              # round(log2(n̂·d·w·2^K_B))
+    K_A=28,              # ceil(log2(n̂·d·(w·2^K_B−1)/ln μ_BG_target))
+                         # with μ_BG_target = 1.01
     K_B=5,
     K_w=5,
     lam=128,
     max_attempts=200,
-    mask_sampler="facct",    # sigma_0 ≈ 2.6e7 — CDT would be multi-GB
+    mask_sampler="facct",    # sigma_0 ≈ 5e7 — CDT would be multi-GB
 )
 
 
 # Benchmark parameter set: 16-of-32 threshold signature.
-# Shares the PRODUCTION lattice.  Signature size ~ 22.6 KB,
-# ~ 12.3 sequential attempts.
+# Shares the PRODUCTION lattice.
 BENCH_PARAMS = LoTRSParams(
     name="lotrs-bench-16of32",
     d=128,
     q=274877906837,
-    q_hat=8589934237,
+    q_hat=274877906837,
     kappa=1,
     beta=32,
     T=16,
     k=12,
     l=5,
     l_prime=6,
-    n_hat=10,
+    n_hat=11,
     k_hat=8,
     w=31,
     eta=1,
-    phi=188.0,           # 11.75 * T
-    phi_a=50.0,
+    phi=352.0,           # 22 * T
+    phi_a=24.0,
     phi_b=4.0,
-    K_A=20,
+    K_A=28,
     K_B=5,
     K_w=5,
     lam=128,
@@ -460,27 +459,27 @@ BENCH_PARAMS = LoTRSParams(
 )
 
 
-# 4-of-32 benchmark-only variant.  Shares the BENCH lattice; phi / phi_a
-# identical because the new finder doesn't scale phi_a with T.
+# 4-of-32 benchmark-only variant.  Shares the BENCH lattice; phi_a
+# is identical because the finder doesn't scale phi_a with T.
 BENCH_4OF32 = LoTRSParams(
     name="lotrs-bench-4of32",
     d=128,
     q=274877906837,
-    q_hat=8589934237,
+    q_hat=274877906837,
     kappa=1,
     beta=32,
     T=4,
     k=12,
     l=5,
     l_prime=6,
-    n_hat=10,
+    n_hat=11,
     k_hat=8,
     w=31,
     eta=1,
-    phi=47.0,            # 11.75 * T
-    phi_a=50.0,
+    phi=88.0,            # 22 * T
+    phi_a=24.0,
     phi_b=4.0,
-    K_A=20,
+    K_A=28,
     K_B=5,
     K_w=5,
     lam=128,

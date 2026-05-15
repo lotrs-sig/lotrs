@@ -75,13 +75,15 @@ mkdir -p bench-out
 cargo run --release --example bench --      \
     --grid "32,1:4:8:16:32;100,1:5:10:25:50;1,2:4:8:16" \
     > bench-out/grid-d128.md 2>&1
+pip install matplotlib                       # one-time, only for plot_bench.py
 python3 scripts/plot_bench.py bench-out/grid-d128.md
 ```
 
-Wall-clock is **≈ 15 minutes** on a single modern x86_64 core
-(release build, single-threaded).  The plot script writes
-`bench-out/{data.csv, summary.md, sign-vs-T.pdf, sigsize-vs-T.pdf,
-breakdown-vs-T.pdf, rs-alone-vs-N.pdf, dualms-alone-vs-T.pdf}`.
+Wall-clock is **≈ 8 minutes** on a modern x86_64 box (release
+build, `rayon` multi-threaded across all hardware threads).  The
+plot script writes `bench-out/{data.csv, summary.md, sign-vs-T.pdf,
+sigsize-vs-T.pdf, breakdown-vs-T.pdf, rs-alone-vs-N.pdf,
+dualms-alone-vs-T.pdf}`.
 
 For a faster smoke test that produces the headline parameter rows
 without the full grid:
@@ -93,9 +95,6 @@ cargo run --release --example bench -- --skip-test --with-prod
 The reference output captured by the authors lives under
 `lotrs-rs/bench-out/` — `summary.md` is the human-readable digest,
 `data.csv` is the machine-readable form.
-
-The `bench-out/` files committed to the repository are the precise
-outputs that produced the figures and tables in the paper.
 
 See [`lotrs-rs/README.md`](lotrs-rs/README.md) § Benchmarks for the
 hardware / methodology footnotes (sample counts per cell, the
@@ -116,11 +115,19 @@ make reference      # writes a fresh comparison log to compare against
 Headline values for the paper parameter point (`N = 100`, `T = 50`):
 
 ```
-Signature size                            ≈ 35.14 KB
+Signature size                            ≈ 35.06 KB
 Single public key size                    ≈  7.13 KB
 Ring PK size                              ≈ 35,625 KB
-Number of repetitions for rejection samp. ≈ 12.34
+Number of repetitions for rejection samp. ≈  2.98   (estimator heuristic)
+Binary-proof PQ ASIS cost                 ≈ 87 bits
+DualMS      PQ ASIS cost                  ≈ 90 bits
 ```
+
+The "number of repetitions" is the estimator's restart-rate
+heuristic μ_total; empirical attempts in the reference
+implementations may be slightly higher because the signer also
+performs a `w̃₀`-stability restart on top of the rejection checks
+counted here.
 
 Requires SageMath with Python support available as `sage`.  The
 estimator vendors local copies of the lattice estimator and the

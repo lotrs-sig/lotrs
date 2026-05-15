@@ -2,11 +2,11 @@
 //!
 //! Four concrete parameter sets are provided.  The three d=128 sets
 //! track `estimator/lotrs_estimate.py` and share the same lattice
-//! (`k=12, l=5, l'=6, n̂=10, k̂=8`,
-//! `phi_a=50`, `phi_b=4`, `K_A=20`, `K_B=5`, `K_w=5`,
+//! (`k=12, l=5, l'=6, n̂=11, k̂=8`,
+//! `phi_a=24`, `phi_b=4`, `K_A=28`, `K_B=5`, `K_w=5`,
 //! `q = largest prime ≤ 2^38 with q ≡ 5 mod 8`,
-//! `q_hat = largest prime ≤ 2^33 with q_hat ≡ 5 mod 8`).  Only
-//! `T`, `beta`, and `phi = 11.75·T` vary between them.
+//! `q_hat = largest prime < 2^38 with q_hat ≡ 5 mod 8`).  Only
+//! `T`, `beta`, and `phi = 22·T` vary between them.
 //!
 //! * [`TEST_PARAMS`]       — small (d=32, N=4, T=2) for correctness testing.
 //! * [`BENCH_4OF32`]       — 4-of-32 threshold, d=128, ~22 KB signatures.
@@ -276,57 +276,59 @@ pub const TEST_PARAMS: LoTRSParams = LoTRSParams {
 /// Production 50-of-100 parameter set.  Matches
 /// `estimator/lotrs_estimate.py` (output:
 /// `estimator/LoTRS-Estimate-Output-N100T50.txt`).  Signature
-/// size ~ 34 KB, ~ 12.3 sequential attempts.
+/// size ~ 35 KB, ~ 3 expected attempts (estimator heuristic;
+/// empirical may be slightly higher due to the signer's
+/// `w̃₀`-stability restart).
 pub const PRODUCTION_PARAMS: LoTRSParams = LoTRSParams {
     name: "lotrs-128",
     d: 128,
-    q: 274_877_906_837,   // largest prime ≤ 2^38, 5 mod 8
-    q_hat: 8_589_934_237, // largest prime ≤ 2^33, 5 mod 8
+    q: 274_877_906_837,   // largest prime < 2^38, 5 mod 8
+    q_hat: 274_877_906_837, // largest prime < 2^38, 5 mod 8
     kappa: 1,
     beta: 100,
     T: 50,
     k: 12,
     l: 5,
     l_prime: 6,
-    n_hat: 10,
+    n_hat: 11,
     k_hat: 8,
     w: 31,
     eta: 1,
-    phi: 587.5,  // 11.75 * T
-    phi_a: 50.0, // fixed across T
+    phi: 1100.0, // 22 * T
+    phi_a: 24.0, // fixed across T
     phi_b: 4.0,
-    K_A: 20, // round(log2(n_hat·d·w·2^K_B))
+    K_A: 28, // ceil(log2(n_hat·d·(w·2^K_B − 1)/ln μ_BG_target)),
+             //   μ_BG_target = 1.01
     K_B: 5,
     K_w: 5,
     lam: 128,
     max_attempts: 200,
     eta_prime: -1,
     tail_t: 1.2,
-    mask_sampler: MaskSamplerKind::Facct, // sigma_0 ≈ 2.6e7 — CDT infeasible
+    mask_sampler: MaskSamplerKind::Facct, // sigma_0 ≈ 5e7 — CDT infeasible
     eps_tot: EPS_TOT_DEFAULT,
 };
 
 /// 16-of-32 benchmark.  Shares the PRODUCTION lattice.
-/// Signature size ~ 22.6 KB, ~ 12.3 sequential attempts.
 pub const BENCH_PARAMS: LoTRSParams = LoTRSParams {
     name: "lotrs-bench-16of32",
     d: 128,
     q: 274_877_906_837,
-    q_hat: 8_589_934_237,
+    q_hat: 274_877_906_837,
     kappa: 1,
     beta: 32,
     T: 16,
     k: 12,
     l: 5,
     l_prime: 6,
-    n_hat: 10,
+    n_hat: 11,
     k_hat: 8,
     w: 31,
     eta: 1,
-    phi: 188.0, // 11.75 * T
-    phi_a: 50.0,
+    phi: 352.0, // 22 * T
+    phi_a: 24.0,
     phi_b: 4.0,
-    K_A: 20,
+    K_A: 28,
     K_B: 5,
     K_w: 5,
     lam: 128,
@@ -343,21 +345,21 @@ pub const BENCH_4OF32: LoTRSParams = LoTRSParams {
     name: "lotrs-bench-4of32",
     d: 128,
     q: 274_877_906_837,
-    q_hat: 8_589_934_237,
+    q_hat: 274_877_906_837,
     kappa: 1,
     beta: 32,
     T: 4,
     k: 12,
     l: 5,
     l_prime: 6,
-    n_hat: 10,
+    n_hat: 11,
     k_hat: 8,
     w: 31,
     eta: 1,
-    phi: 47.0, // 11.75 * T
-    phi_a: 50.0,
+    phi: 88.0, // 22 * T
+    phi_a: 24.0,
     phi_b: 4.0,
-    K_A: 20,
+    K_A: 28,
     K_B: 5,
     K_w: 5,
     lam: 128,

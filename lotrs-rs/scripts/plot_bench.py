@@ -65,6 +65,18 @@ BREAK = re.compile(r"^\| `([^`]+)` \| ([\d.]+) "
                    r"\| ([^|]+?) \| ([^|]+?) \| ([^|]+?) "
                    r"\| ([^|]+?) \| ([^|]+?) \| ([^|]+?) \|$")
 
+# Sign stats: | name | Sign std | Sign median | DualMS std | DualMS median |
+#             | RS std | RS median | attempts std | attempts median |
+SIGN_STATS = re.compile(r"^\| `([^`]+)` "
+                        r"\| ([^|]+?) \| ([^|]+?) \| ([^|]+?) \| ([^|]+?) "
+                        r"\| ([^|]+?) \| ([^|]+?) \| ([\d.]+) \| ([\d.]+) \|$")
+
+# Verify stats: | name | Verify std | Verify median | DualMS std | DualMS median |
+#               | RS std | RS median |
+VERIFY_STATS = re.compile(r"^\| `([^`]+)` "
+                          r"\| ([^|]+?) \| ([^|]+?) \| ([^|]+?) \| ([^|]+?) "
+                          r"\| ([^|]+?) \| ([^|]+?) \|$")
+
 # Sizes: | name | sk | pk | ring | sig |
 SIZE = re.compile(r"^\| `([^`]+)` \| ([^|]+?) \| ([^|]+?) "
                   r"\| ([^|]+?) \| ([^|]+?) \|$")
@@ -118,6 +130,35 @@ def parse_report(text):
                 "verify_total_ms": parse_ms(vf),
             })
             continue
+        m = SIGN_STATS.match(line)
+        if m:
+            (name, s_std, s_med, dm_std, dm_med,
+             rs_std, rs_med, att_std, att_med) = m.groups()
+            rows.setdefault(name, {"name": name})
+            rows[name].update({
+                "sign_std_ms": parse_ms(s_std),
+                "sign_median_ms": parse_ms(s_med),
+                "sign_dualms_std_ms": parse_ms(dm_std),
+                "sign_dualms_median_ms": parse_ms(dm_med),
+                "sign_rs_std_ms": parse_ms(rs_std),
+                "sign_rs_median_ms": parse_ms(rs_med),
+                "attempts_std": float(att_std),
+                "attempts_median": float(att_med),
+            })
+            continue
+        m = VERIFY_STATS.match(line)
+        if m:
+            (name, v_std, v_med, dm_std, dm_med, rs_std, rs_med) = m.groups()
+            rows.setdefault(name, {"name": name})
+            rows[name].update({
+                "verify_std_ms": parse_ms(v_std),
+                "verify_median_ms": parse_ms(v_med),
+                "verify_dualms_std_ms": parse_ms(dm_std),
+                "verify_dualms_median_ms": parse_ms(dm_med),
+                "verify_rs_std_ms": parse_ms(rs_std),
+                "verify_rs_median_ms": parse_ms(rs_med),
+            })
+            continue
         m = SIZE.match(line)
         if m:
             name, sk, pk, ring, sig = m.groups()
@@ -132,10 +173,15 @@ def parse_report(text):
 
 
 def write_csv(rows, path):
-    cols = ["name", "d", "N", "T", "samples", "attempts",
+    cols = ["name", "d", "N", "T", "samples",
+            "attempts", "attempts_std", "attempts_median",
             "keygen_ms", "kagg_ms",
-            "sign_ms", "sign_dualms_ms", "sign_rs_ms",
-            "verify_ms", "verify_dualms_ms", "verify_rs_ms",
+            "sign_ms", "sign_std_ms", "sign_median_ms",
+            "sign_dualms_ms", "sign_dualms_std_ms", "sign_dualms_median_ms",
+            "sign_rs_ms", "sign_rs_std_ms", "sign_rs_median_ms",
+            "verify_ms", "verify_std_ms", "verify_median_ms",
+            "verify_dualms_ms", "verify_dualms_std_ms", "verify_dualms_median_ms",
+            "verify_rs_ms", "verify_rs_std_ms", "verify_rs_median_ms",
             "sk_bytes", "pk_bytes", "ring_bytes", "sig_bytes"]
     with open(path, "w", newline="") as f:
         w = csv.DictWriter(f, fieldnames=cols)
@@ -192,7 +238,7 @@ def plot_combined(rows, path):
                 label=f"Verify, N={N}")
     ax.set_xlabel("threshold $T$")
     ax.set_ylabel("time per call (s)")
-    ax.set_title("LoTRS primitive timings (Rust, single core)")
+    ax.set_title("LoTRS primitive timings (Rust, rayon multi-threaded)")
     ax.set_yscale("log")
     ax.set_xscale("log")
     ax.grid(True, which="both", alpha=0.3)
@@ -203,35 +249,96 @@ def plot_combined(rows, path):
 
 
 def plot_breakdown(rows, path):
-    """Sign decomposition: Sign_DualMS vs Sign_RS vs T, faceted by N.
+    """Sign decomposition as stacked bars (per-signature wall-clock).
 
-    Each N gets one color; three line styles distinguish total / DualMS / RS.
+    Three stacks per (N, T) cell, bottom to top:
+
+    * ``Sign_DualMS`` — sign1 (T-fold commitments) + sign2 minus the
+      binary proof + sagg.  At PRODUCTION this is ≈ 99% sign1 — the
+      DualMS multi-sig is essentially the per-signer round-1 work.
+    * ``Sign_RS`` — `sign_bin`, the binary ring proof.  Run once per
+      rejection-sampling attempt now that `pi` is broadcast.
+    * ``Context / setup`` — `Sign − Sign_DualMS − Sign_RS`.  One-shot
+      per sign call: matrix expansion (A/B/G + NTT prep), PK-table
+      digest, and the α_u precompute.  Independent of attempts.
+
+    Bar heights carry the geometric attempt-count variance (μ ≈ 6,
+    σ ≈ μ) — see `data.csv :: attempts` for the per-cell mean.
     """
-    grouped = split_by_N([r for r in rows if is_threshold(r)
-                          and "sign_dualms_ms" in r])
-    if not grouped:
+    cells = sorted([r for r in rows if is_threshold(r)
+                    and "sign_dualms_ms" in r],
+                   key=lambda r: (r["N"], r["T"]))
+    if not cells:
         return
-    fig, ax = plt.subplots(figsize=(5.8, 4.0))
-    cmap = plt.get_cmap("tab10")
-    for idx, (N, group) in enumerate(sorted(grouped.items())):
-        color = cmap(idx)
-        T = [r["T"] for r in group]
-        tot = [r["sign_ms"] / 1000.0 for r in group]
-        dm = [r["sign_dualms_ms"] / 1000.0 for r in group]
-        rs = [r["sign_rs_ms"] / 1000.0 for r in group]
-        ax.plot(T, tot, marker="o", color=color, linewidth=1.6,
-                label=f"Sign total,   N={N}")
-        ax.plot(T, dm, marker="^", color=color, linewidth=1.1,
-                linestyle="--", label=f"Sign DualMS, N={N}")
-        ax.plot(T, rs, marker="v", color=color, linewidth=1.1,
-                linestyle=":", label=f"Sign RS,     N={N}")
-    ax.set_xlabel("threshold $T$")
-    ax.set_ylabel("time per call (s)")
-    ax.set_title("Sign decomposition: DualMS multi-sig vs RS binary proof")
-    ax.set_yscale("log")
-    ax.set_xscale("log")
-    ax.grid(True, which="both", alpha=0.3)
-    ax.legend(fontsize="x-small", framealpha=0.9, loc="upper left", ncol=2)
+
+    labels = [f"N={r['N']}\nT={r['T']}" for r in cells]
+    x = list(range(len(cells)))
+
+    dm = [r["sign_dualms_ms"] / 1000.0 for r in cells]
+    rs = [r["sign_rs_ms"] / 1000.0 for r in cells]
+    # Context = total Sign minus the two attributed components.  Clamp
+    # to 0 in case a single noisy cell happened to undershoot the sum
+    # (rare but possible under attempt-variance + timer jitter).
+    ctx = [max(0.0, r["sign_ms"] / 1000.0 - d - s)
+           for r, d, s in zip(cells, dm, rs)]
+    # Standard error of the mean for total Sign per cell — drawn as a
+    # symmetric ±1 SE error bar on the top of the stack.  SE = σ/√n
+    # measures the uncertainty in the displayed mean (which is what a
+    # bar chart of means should communicate), not the spread of
+    # individual observations (which is ~σ ≈ μ for geometric attempt
+    # counts and would visually overwhelm the bar).
+    import math
+    sign_se = [(r.get("sign_std_ms", 0.0) / 1000.0) /
+               math.sqrt(max(1, r.get("samples", 1)))
+               for r in cells]
+    # Stack tops, where the error bars hang.
+    stack_top = [c + d + s for c, d, s in zip(ctx, dm, rs)]
+
+    fig, ax = plt.subplots(figsize=(7.0, 4.2))
+    dm_color = "#3b6ec0"  # blue
+    rs_color = "#e3a23a"  # amber
+    ctx_color = "#9aa3ad"  # neutral grey — signals "overhead, not protocol"
+
+    # Stack order (bottom → top): Context / setup → DualMS → RS.
+    # Context goes at the bottom because it's the one-shot setup
+    # foundation; DualMS and RS sit on top as per-attempt work.
+    # (Note: Context is not constant — it scales with N (G matrix
+    # columns ≈ 2N + 19), with N·T (pk_table_hash), and with T (α_u).)
+    ax.bar(x, ctx, color=ctx_color,
+           label="Context / setup (A·G·B expand + pk_hash + α_u)")
+    ax.bar(x, dm, bottom=ctx, color=dm_color,
+           label=r"Sign$_\mathrm{DualMS}$ (multi-sig)")
+    ax.bar(x, rs, bottom=[c + d for c, d in zip(ctx, dm)], color=rs_color,
+           label=r"Sign$_\mathrm{RS}$ (binary proof)")
+    # ±1 SE error bars on the stack total — pinned at stack_top so the
+    # caps land on the visible bar height.  Geometric attempt-count
+    # variance dominates the underlying spread, but SE = σ/√n shrinks
+    # that to the uncertainty on the *mean* (≈ 9% at N=100, CV ≈ 0.9).
+    if any(s > 0 for s in sign_se):
+        sample_n = cells[0].get("samples", 0)
+        ax.errorbar(x, stack_top, yerr=sign_se, fmt="none",
+                    ecolor="black", elinewidth=0.9, capsize=3,
+                    label=f"±1 SE on Sign mean (σ/√n, n = {sample_n})")
+
+    # Light vertical separator between N-groups so the eye can read
+    # "T sweep within fixed N" without juggling the x-tick labels.
+    n_values = [r["N"] for r in cells]
+    for i in range(1, len(cells)):
+        if n_values[i] != n_values[i - 1]:
+            ax.axvline(i - 0.5, color="0.7", linewidth=0.8, linestyle=":")
+
+    ax.set_xticks(x)
+    ax.set_xticklabels(labels, fontsize="x-small")
+    ax.set_ylabel("time per signature (s)")
+    sample_n = cells[0].get("samples", 0)
+    ax.set_title(
+        f"Sign: DualMS + binary proof + setup "
+        f"(average of n = {sample_n} runs)"
+    )
+    ax.grid(True, axis="y", alpha=0.3)
+    ax.set_axisbelow(True)
+    ax.legend(loc="upper left", fontsize="small", framealpha=0.9)
+
     fig.tight_layout()
     fig.savefig(path)
     plt.close(fig)
@@ -330,7 +437,7 @@ def emit_summary_table(rows, path):
     rs_alone = [r for r in rows_sorted if is_rs_alone(r)]
     dualms_alone = [r for r in rows_sorted if is_dualms_alone(r)]
     with open(path, "w") as f:
-        f.write("# LoTRS benchmark summary (release build, single core)\n\n")
+        f.write("# LoTRS benchmark summary (release build, rayon multi-threaded)\n\n")
 
         if threshold:
             f.write("## LoTRS combined protocol (threshold ring sig)\n\n")
@@ -352,7 +459,7 @@ def emit_summary_table(rows, path):
             f.write("## RS-alone (T=1)\n\n")
             f.write("Plain ring signature: one signer, ring of N keys.  "
                     "Numbers are the LoTRS protocol at T=1, *not* re-tuned "
-                    "(φ=11.75·T is small at T=1, so attempt counts are "
+                    "(φ=22·T is small at T=1, so attempt counts are "
                     "inflated relative to a properly-tuned standalone RS).\n\n")
             f.write("| N | Sign (s) | Verify (ms) | sig (KiB) | attempts |\n")
             f.write("|---:|---:|---:|---:|---:|\n")

@@ -14,6 +14,10 @@ import math
 
 from ring import Ring
 from params import LoTRSParams
+from sample import make_xof, xof_sample_challenge
+
+
+FS_CHALLENGE_BYTES = 16
 
 
 # =====================================================================
@@ -211,58 +215,10 @@ def _unpack_rice(data, d, rice_k, bound):
 #  Challenge encoding
 # =====================================================================
 
-def _pack_challenge(poly, w, d):
-    """
-    Encode a challenge polynomial (w nonzero +/-1 coefficients).
-
-    Format: w positions (sorted ascending, ceil(log2(d)) bits each)
-            + w sign bits (0 = +1, 1 = -1), byte-aligned.
-    """
-    pos_bits = max(1, (d - 1).bit_length())
-    positions = sorted(i for i, c in enumerate(poly) if c != 0)
-    if len(positions) != w:
-        raise ValueError(
-            f"challenge has {len(positions)} nonzero coeffs, expected {w}")
-
-    wr = BitWriter()
-    for p in positions:
-        wr.write_bits(p, pos_bits)
-    for p in positions:
-        wr.write_bits(1 if poly[p] < 0 else 0, 1)
-    wr.pad_to_byte()
-    return wr.to_bytes()
-
-
-def _unpack_challenge(data, w, d):
-    """
-    Decode a challenge polynomial.
-
-    Rejects duplicate / out-of-order positions, non-binary values.
-    Returns (list[int], bytes_consumed).
-    """
-    pos_bits = max(1, (d - 1).bit_length())
-    r = BitReader(data)
-
-    positions = []
-    for _ in range(w):
-        p = r.read_bits(pos_bits)
-        if p >= d:
-            raise ValueError(f"challenge position {p} >= d={d}")
-        if positions and p <= positions[-1]:
-            raise ValueError("challenge positions not strictly increasing")
-        positions.append(p)
-
-    signs = []
-    for _ in range(w):
-        signs.append(r.read_bits(1))
-
-    r.check_padding()
-
-    poly = [0] * d
-    for p, s in zip(positions, signs):
-        poly[p] = -1 if s else 1
-
-    return poly, r.consumed_bytes
+def _expand_challenge_seed(x_seed, w, d):
+    """Expand serialized x_seed to the sparse ternary challenge."""
+    xof = make_xof(x_seed, b"challenge")
+    return xof_sample_challenge(xof, w, d)
 
 
 # =====================================================================
@@ -378,7 +334,7 @@ class LoTRSCodec:
         Layout (all byte-aligned per component):
           B_bin_hi    : n_hat polys, fixed-width (dx_bbin)
           w_tilde_hi  : kappa * k polys, fixed-width (dx_whi)
-          x           : challenge encoding
+          x_seed     : interim challenge seed
           f1          : kappa*(beta-1) polys, Rice
           z_b         : (n_hat+k_hat) polys, Rice
           z_tilde     : l polys, Rice
@@ -403,9 +359,15 @@ class LoTRSCodec:
                 parts.append(
                     _pack_fixed(centered, self.dx_whi, offset))
 
-        # x -- challenge
-        parts.append(_pack_challenge(
-            self.Rq.centered(pi["x"]), par.w, par.d))
+        # x_seed -- interim challenge seed; x is expanded internally
+        x_seed = pi.get("x_seed")
+        if not isinstance(x_seed, bytes) or len(x_seed) != FS_CHALLENGE_BYTES:
+            raise ValueError("x_seed must be a 16-byte string")
+        x_expected = self.Rq.from_centered(
+            _expand_challenge_seed(x_seed, par.w, par.d))
+        if pi.get("x") != x_expected:
+            raise ValueError("x does not match x_seed expansion")
+        parts.append(x_seed)
 
         # f1 -- Rice
         for poly in pi["f1"]:
@@ -487,11 +449,13 @@ class LoTRSCodec:
             w_tilde_hi.append(w_hi_flat[idx:idx + par.k])
             idx += par.k
 
-        # x (challenge)
-        x_centered, consumed = _unpack_challenge(
-            data[pos:], par.w, par.d)
+        # x_seed (interim challenge seed) and expanded x
+        x_seed = data[pos:pos + FS_CHALLENGE_BYTES]
+        if len(x_seed) < FS_CHALLENGE_BYTES:
+            raise ValueError("truncated signature")
+        pos += FS_CHALLENGE_BYTES
+        x_centered = _expand_challenge_seed(x_seed, par.w, par.d)
         x = Rq.from_centered(x_centered)
-        pos += consumed
 
         # f1
         f1 = consume_rice(Rq, par.kappa * (par.beta - 1),
@@ -521,6 +485,7 @@ class LoTRSCodec:
             pi=dict(
                 B_bin_hi=B_bin_hi,
                 w_tilde_hi=w_tilde_hi,
+                x_seed=x_seed,
                 x=x,
                 f1=f1,
                 z_b=z_b,
@@ -547,14 +512,11 @@ class LoTRSCodec:
         sigma_r = par.sigma_0_prime * math.sqrt(par.T)
         sigma_e = (par.sigma_0 + par.sigma_0_prime) * math.sqrt(par.T)
 
-        pos_bits = max(1, (d - 1).bit_length())
-        ch_bits = par.w * (pos_bits + 1)
-
         return {
             "B_bin_hi":    par.n_hat * (self.dx_bbin * d + 7) // 8,
             "w_tilde_hi":  (par.kappa - 1) * par.k
                            * (self.dx_whi * d + 7) // 8,
-            "x":           (ch_bits + 7) // 8,
+            "x_seed":     FS_CHALLENGE_BYTES,
             "f1":          rice_est(par.kappa * (par.beta - 1),
                                    self.rice_f1, par.sigma_a),
             "z_b":         rice_est(par.n_hat + par.k_hat,
@@ -576,14 +538,14 @@ class LoTRSCodec:
         enc = {
             "B_bin_hi":   f"fixed {self.dx_bbin}b",
             "w_tilde_hi": f"fixed {self.dx_whi}b",
-            "x":          f"challenge w={self.par.w}",
+            "x_seed":    "challenge seed",
             "f1":         f"Rice k={self.rice_f1}",
             "z_b":        f"Rice k={self.rice_zb}",
             "z_tilde":    f"Rice k={self.rice_zt}",
             "r_tilde":    f"Rice k={self.rice_rt}",
             "e_tilde":    f"Rice k={self.rice_et}",
         }
-        for name in ["B_bin_hi", "w_tilde_hi", "x", "f1", "z_b",
+        for name in ["B_bin_hi", "w_tilde_hi", "x_seed", "f1", "z_b",
                       "z_tilde", "r_tilde", "e_tilde"]:
             b = s[name]
             print(f"  {name:12s}  {b:7d}  {100*b/total:5.1f}  {enc[name]}")
@@ -612,15 +574,5 @@ if __name__ == "__main__":
     enc = _pack_rice(coeffs, rk, bound)
     dec, _ = _unpack_rice(enc, 32, rk, bound)
     assert dec == coeffs, "Rice round-trip"
-
-    # challenge round-trip
-    ch = [0] * 32
-    ch[3] = 1
-    ch[7] = -1
-    ch[15] = 1
-    ch[28] = -1
-    enc_ch = _pack_challenge(ch, 4, 32)
-    dec_ch, _ = _unpack_challenge(enc_ch, 4, 32)
-    assert dec_ch == ch, "challenge round-trip"
 
     print("\ncodec.py: all self-tests passed")

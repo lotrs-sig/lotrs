@@ -13,6 +13,7 @@ path = "src/lib.rs"
 sha3 = "0.10"                                # SHAKE256
 subtle = { version = "2", default-features = false }
 zeroize = { version = "1", features = ["derive"] }
+rayon = "1"                                  # data parallelism for sign1, kagg, verify
 
 [dev-dependencies]
 serde = { version = "1", features = ["derive"] }

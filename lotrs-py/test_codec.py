@@ -11,7 +11,6 @@ from lotrs import LoTRS
 from codec import (LoTRSCodec, BitWriter, BitReader,
                    _pack_fixed, _unpack_fixed,
                    _pack_rice, _unpack_rice,
-                   _pack_challenge, _unpack_challenge,
                    optimal_rice_k)
 from vectors import generate, verify_vectors
 
@@ -156,49 +155,6 @@ def test_rice_compression_ratio():
 # ===========================================================================
 #  Challenge encoding
 # ===========================================================================
-
-def test_challenge_roundtrip():
-    ch = [0] * 64
-    ch[3] = 1
-    ch[7] = -1
-    ch[31] = 1
-    ch[60] = -1
-    enc = _pack_challenge(ch, 4, 64)
-    dec, _ = _unpack_challenge(enc, 4, 64)
-    assert dec == ch
-
-
-def test_challenge_rejects_unsorted():
-    """Manually craft non-ascending positions."""
-    w = BitWriter()
-    pos_bits = 6                           # for d=64
-    # write positions out of order: 10, 5
-    w.write_bits(10, pos_bits)
-    w.write_bits(5, pos_bits)
-    w.write_bits(0, 1)                     # signs
-    w.write_bits(0, 1)
-    data = w.to_bytes()
-    try:
-        _unpack_challenge(data, 2, 64)
-        assert False, "should reject non-ascending positions"
-    except ValueError:
-        pass
-
-
-def test_challenge_rejects_out_of_range():
-    """For non-power-of-2 d, positions can exceed d."""
-    d = 50                                 # not a power of 2
-    pos_bits = max(1, (d - 1).bit_length())  # 6 bits, max val 63
-    wr = BitWriter()
-    wr.write_bits(55, pos_bits)            # 55 >= d=50
-    wr.write_bits(0, 1)                    # sign
-    data = wr.to_bytes()
-    try:
-        _unpack_challenge(data, 1, d)
-        assert False, "should reject position >= d"
-    except ValueError:
-        pass
-
 
 # ===========================================================================
 #  pp / sk / pk encoding

@@ -60,7 +60,7 @@ def test_pi_has_no_w_tilde_hi_for_kappa1():
 
 
 def test_pi_fields_present():
-    """pi should contain B_bin_hi, w_tilde_hi, x, f1, z_b."""
+    """pi should contain B_bin_hi, w_tilde_hi, x_seed, x, f1, z_b."""
     scheme = _get_scheme()
     par = TEST_PARAMS
     pp, pk_table, all_sks = _make_ring(par)

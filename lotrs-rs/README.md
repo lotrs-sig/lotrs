@@ -196,7 +196,9 @@ every entry byte-for-byte.  Covers:
 
 * forced-FACCT at moderate sigma (CDT and FACCT would both work
   there, so we can compare)
-* FACCT at `sigma ≈ 8.5 × 10⁶` (the `BENCH_PARAMS` `sigma_0` regime)
+* FACCT at `sigma ≈ 8.5 × 10⁶` (large-sigma regime — between
+  `BENCH_4OF32` σ₀ ≈ 3.9 × 10⁶ and `BENCH_PARAMS` σ₀ ≈ 1.6 × 10⁷
+  under v1.5; fixed KAT point chosen to exercise the same code path)
 * CDT at small sigma
 
 **BENCH / PRODUCTION end-to-end** signing + verification works
@@ -313,32 +315,37 @@ must be updated to match.
 ### Parameters used for the numbers below
 
 All rows use the `d=128` lattice from `estimator/lotrs_estimate.py`
-(2026-04-19 revision):
+(v1.5 / 2026-05-15 revision):
 
 ```
-κ = 1,  k = 12,  l = 5,  l' = 6,  n̂ = 10,  k̂ = 8,  w = 31,  η = 1
-q     = 274877906837   (largest prime ≤ 2^38 with q ≡ 5 mod 8)
-q_hat = 8589934237     (largest prime ≤ 2^33 with q_hat ≡ 5 mod 8)
-φ_a = 50,  φ_b = 4,  φ = 11.75·T    (rejection-sampling slack)
-K_A = 20,  K_B = 5,  K_w = 5,  ε_tot = 0.01
+κ = 1,  k = 12,  l = 5,  l' = 6,  n̂ = 11,  k̂ = 8,  w = 31,  η = 1
+q     = 274877906837   (largest prime < 2^38 with q     ≡ 5 mod 8)
+q_hat = 274877906837   (largest prime < 2^38 with q_hat ≡ 5 mod 8)
+φ_a = 24,  φ_b = 4,  φ = 22·T       (rejection-sampling slack)
+K_A = 28,  K_B = 5,  K_w = 5,  ε_tot = 0.01
 mask_sampler = FACCT,  tail_t = 1.2
 ```
 
-`N = β^κ = β` (κ = 1), so only `N`, `T`, and `φ = 11.75·T` vary across
+`N = β^κ = β` (κ = 1), so only `N`, `T`, and `φ = 22·T` vary across
 rows; everything else is fixed.
 
 ### Methodology
 
-**Sign** and **Verify** are arithmetic means over multiple signing
-seeds — the rejection-sampling attempt count per signing call is
-geometrically distributed.  The estimator's heuristic predicts
-`μ_total ≈ 12.3` accepted-attempt mean; the implementation also
-restarts on the additional `w̃₀`-stability check used by the κ=1
-commitment-compression path, so empirical means are in the 25–40
-range across the grid.  Per-attempt sign cost is the more
-parameter-stable indicator.  Sample counts per cell: **12** at T≤5,
-**10** at T≤10, **8** at T≤25, **5** at T≥32.  The residual
-cell-to-cell sampling noise is ≈ ±10% at these counts.
+**Sign** and **Verify** are arithmetic means over **N = 100 signing
+seeds per cell**, uniform across the grid.  Samples are
+**interleaved across cells**: one sample of every cell, then the
+next, and so on — so that any time-varying nuisance (CPU frequency
+/ thermal scaling, scheduler load) averages into every cell equally
+rather than concentrating in whichever cell happened to run during
+the disturbance.  The rejection-sampling attempt count per signing
+call is geometrically distributed; the estimator heuristic under
+v1.5 predicts `μ_total ≈ 3.0` accepted-attempt mean (down from ≈
+12.3 under v1.0).  Empirical means run around 6 because the
+implementation also restarts on the additional `w̃₀`-stability
+check used by the κ=1 commitment-compression path.  Per-attempt
+sign cost is the more parameter-stable indicator.  At `N = 100` and
+geometric CV ≈ √(1 − 1/μ) ≈ 0.9, the per-cell standard error on
+`Sign` is ≈ 9 %.
 
 **KeyGen** and **KAgg** are single-run (deterministic given `pp` / PK).
 
@@ -347,11 +354,13 @@ cell-to-cell sampling noise is ≈ ±10% at these counts.
 * **CPU**: AMD Ryzen AI 9 HX 370 (Zen 5, 12 cores / 24 threads,
   5.1 GHz max boost)
 * **OS**: Debian forky/sid (`Linux 6.19.13-1 amd64`)
-* **Toolchain**: `rustc 1.95.0`, single-threaded
+* **Toolchain**: `rustc 1.95.0`, release build, `rayon`
+  multi-threaded across all 24 hardware threads
 
-A production deployment would parallelise the per-signer loops and
-amortise the CRT-NTT transforms; the numbers here are a
-single-threaded baseline.
+The reference implementation parallelises the per-signer round-1 /
+round-2 loops and the verifier `kagg`/`pk_sum` reductions with
+`rayon`.  The CRT-NTT transforms of the public matrices `A`, `G`,
+`B` are amortised once per signing call.
 
 ### Grid results
 
@@ -369,24 +378,24 @@ plots: [`sign-vs-T.pdf`](bench-out/sign-vs-T.pdf),
 
 |   N |  T | Sign       | Verify   | KAgg     |  signature  | single pk |  ring PK   |
 |  -: | -: | -:         | -:       | -:       |   -:        |   -:      |    -:      |
-|  32 |  4 |   1.38 s   |   60 ms  |   35 ms  |  22.53 KiB  | 7.12 KiB  | 0.89 MiB   |
-|  32 |  8 |   4.29 s   |  100 ms  |   71 ms  |  22.99 KiB  | 7.12 KiB  | 1.78 MiB   |
-|  32 | 16 |   6.01 s   |  177 ms  |  144 ms  |  23.62 KiB  | 7.12 KiB  | 3.56 MiB   |
-|  32 | 32 |   6.05 s   |  334 ms  |  288 ms  |  24.07 KiB  | 7.12 KiB  | 7.12 MiB   |
-| 100 |  5 |   4.60 s   |  208 ms  |  134 ms  |  33.74 KiB  | 7.12 KiB  | 3.48 MiB   |
-| 100 | 10 |  12.40 s   |  364 ms  |  276 ms  |  34.36 KiB  | 7.12 KiB  | 6.96 MiB   |
-| 100 | 25 |  29.24 s   |  828 ms  |  702 ms  |  35.09 KiB  | 7.12 KiB  | 17.40 MiB  |
-| 100 | 50 | **50.39 s**| **1.61 s** | **1.41 s** | **35.53 KiB** | 7.12 KiB | 34.79 MiB  |
+|  32 |  4 |  139.3 ms  |  26.8 ms |   9.2 ms |  23.90 KiB  | 7.12 KiB  | 0.89 MiB   |
+|  32 |  8 |  173.5 ms  |  33.0 ms |  15.4 ms |  24.36 KiB  | 7.12 KiB  | 1.78 MiB   |
+|  32 | 16 |  219.2 ms  |  45.2 ms |  26.7 ms |  24.99 KiB  | 7.12 KiB  | 3.56 MiB   |
+|  32 | 32 |  292.7 ms  |  72.0 ms |  55.4 ms |  25.41 KiB  | 7.12 KiB  | 7.12 MiB   |
+| 100 |  5 |  423.7 ms  |  64.3 ms |  23.4 ms |  34.01 KiB  | 7.12 KiB  | 3.48 MiB   |
+| 100 | 10 |  475.9 ms  |  87.7 ms |  45.1 ms |  34.64 KiB  | 7.12 KiB  | 6.96 MiB   |
+| 100 | 25 |  616.3 ms  | 156.9 ms | 100.9 ms |  35.35 KiB  | 7.12 KiB  | 17.40 MiB  |
+| 100 | 50 | **887.2 ms** | **272.0 ms** | **210.3 ms** | **35.79 KiB** | 7.12 KiB | 34.79 MiB |
 
 The `(N, T) = (100, 50)` row is Table 3 of the paper (= the
 `PRODUCTION_PARAMS` preset). The four `(32, *)` rows include the
 named `BENCH_4OF32` (T=4) and `BENCH_PARAMS` (T=16) presets used by
-the regression suite. Total grid wall-clock ≈ 15 minutes on the
+the regression suite. Total grid wall-clock ≈ 8 minutes on the
 hardware listed above.
 
 `KeyGen` sits at ~1.6 ms across every row (independent of `N`, `T`).
 `KAgg` scales as `N·T` (deterministic, single-run): 5000 pk products
-at `(100, 50)` → 1.41 s. `pk` is 7.125 KiB in every row; the
+at `(100, 50)` → 210 ms. `pk` is 7.125 KiB in every row; the
 `N·T·pk` ring-PK table scales accordingly. Sign time grows
 near-linearly in `T` at fixed `N` and grows by roughly the `N` ratio
 at fixed `T` (compare `(32, T)` vs `(100, T)` rows).
@@ -427,12 +436,13 @@ Observations:
   deterministic cost is therefore the `N·T` arithmetic, not repeated
   hashing of the full PK table.
 * **Sign** is dominated by rejection-sampling attempts.  The
-  estimator's `μ_total = μ·μ_a·μ_b·μ_BG·μ_fg ≈ 12.3` is the
-  multiplicative restart factor of the four samplers and is roughly
-  constant across `T` because `φ = 11.75·T` holds `μ^T` constant; the
-  implementation also restarts on the additional `w̃₀`-stability
-  check, so the empirical mean attempts in this grid are 25–40 (see
-  the `att.` column of `data.csv`).  Per-attempt cost scales
+  estimator's `μ_total = μ·μ_a·μ_b·μ_BG·μ_fg ≈ 3.0` under v1.5 is
+  the multiplicative restart factor of the four samplers and is
+  roughly constant across `T` because `φ = 22·T` holds `μ^T`
+  constant.  The implementation also restarts on the additional
+  `w̃₀`-stability check, so the empirical mean attempt count is in
+  the 6–7 range across all cells in the current grid (see the
+  `att.` column of `data.csv`).  Per-attempt cost scales
   ~linearly in `T·N` for the signer / kagg / sign_bin loops.
 * **Verify** tracks `kagg` closely — the bulk of the verifier cost
   is the same `N·T` product.
@@ -444,7 +454,7 @@ Observations:
   `R_q` at `d=128, k=12, log q = 38`, giving
   `k·d·⌈log₂ q⌉ / 8 = 12·128·38/8 = 7.125 KiB`.
 * Sizes agree with the `estimator/lotrs_estimate.py` per-component
-  totals to within codec overhead.  At `(N, T) = (100, 50)` the
-  estimator predicts 35.14 KB and the codec emits 35.53 KiB; the
-  small surplus is the Golomb-Rice header / per-stream parameter
-  overhead, which the estimator ignores.
+  totals to within codec overhead.  Under v1.5 the estimator
+  predicts 35.06 KB at `(N, T) = (100, 50)`; the codec emits 35.79
+  KiB.  The small surplus is the Golomb-Rice header / per-stream
+  parameter overhead, which the estimator ignores.

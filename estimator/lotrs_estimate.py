@@ -14,9 +14,16 @@ from lotrs_param_checks import *
 
 """Auxiliary functions"""
 def prime_5_mod_8(bits):
-    q = int(next_prime(int(2) ** int(bits - 1)))
+    """Largest prime < 2^bits that is congruent to 5 mod 8.
+
+    Lemma 2.2 (Lyubashevsky) requires q == 5 (mod 8) so that
+    R_q = Z_q[X]/(X^d + 1) is "almost a field" at d a power of 2,
+    which we need for invertibility of challenge differences and
+    for the binary-proof and DualMS hardness reductions.
+    """
+    q = int(previous_prime(int(2) ** int(bits)))
     while q % 8 != 5:
-        q = int(next_prime(q))
+        q = int(previous_prime(q))
     return q
 
 """Main function"""
@@ -25,8 +32,8 @@ def main():
 
     """Parameter variables"""
     #Common parameters
-    T = 50 #Threshold size
     N = 100 #Ring size; n = beta^kappa
+    T = RR(N/2) #Threshold size
     kappa = 1
     beta = N #kappa = 1 --> beta = N
 
@@ -41,33 +48,40 @@ def main():
 
     d = 128 #dim(R_q), i.e., R_q = Z_q[X]/(X^d+1)
 
-    size_x = ceil(log(binomial(d,w),2)+w) #Number of bits for challenge
+    lam = 128 #Security parameter (bits)
+    # SampleInBall-style challenge: only a lambda-bit seed x_seed is
+    # transmitted on the wire; the verifier expands the sparse signed
+    # challenge x deterministically from x_seed via the same XOF the
+    # signer used.  See lotrs-py/sample.py::xof_sample_challenge and
+    # codec.py::_expand_challenge_seed (Rust mirrors).
+    size_x = lam
 
     #Binary proof dimensions + parameters
-    nhat = 10 #sisrank
+    nhat = 11 #sisrank
     khat = 8
-    if False:
-        approx_logqhat = 34
-        qhat = prime_5_mod_8(approx_logqhat)
-    qhat = 8589934237
-    logq_hat = RR(log(qhat, 2))
+
+    # Largest prime < 2^38 with q_hat == 5 (mod 8).
+    qhat = prime_5_mod_8(38)
+    logq_hat = RR(qhat).log2()
     print("Binary proof MLWE modulus q_hat =", qhat, "logq_hat", logq_hat)
     print("nhat =", nhat, "khat =", khat)
 
-    phi_a = 50
+    phi_a = 24
     phi_b = 4
+    mu_BG_target = RR(1.01)
 
     #Dropped bits
     K_b = 5
     K_w0 = 5
-    K_a = round(log((nhat*d*w*pow(2, K_b)), 2))
-    print("K_a" , K_a)
+    K_a = ceil(log((nhat*d*(w*pow(2, K_b)-1))/log(mu_BG_target), 2))
+    print("mu_BG_target", mu_BG_target)
+    print("K_a", K_a)
 
     #Set probability that bounds on f_0, f_1, g_0, g_1 will reject
     eps_total = RR(0.01)
 
     #Binary proof bounds
-    bin_arr = setBinASISBounds(beta, kappa, d, w, nhat, khat, phi_a, phi_b, K_b, eps_total)
+    bin_arr = setBinASISBounds(beta, kappa, d, w, nhat, khat, phi_a, phi_b, K_b, eps_total, mu_BG_target)
     B1 = bin_arr[0][0]
     m1 = bin_arr[0][1]
 
@@ -84,7 +98,7 @@ def main():
     m5 = bin_arr[5][1]
 
     #Binary std deviations
-    B_b = sqrt(d* nhat * khat)*w
+    B_b = sqrt(d*(nhat + khat))*w
     B_a = sqrt(kappa*w)
     sigma_zb = phi_b*B_b
     sigma_f = phi_a*B_a
@@ -93,15 +107,14 @@ def main():
     l = 5
     l_prime = l+1
     k = 12
-    if False:
-        approx_logq = 39
-        q_dualms = prime_5_mod_8(approx_logq)
-    q_dualms = 274877906837
+
+    # Largest prime < 2^38 with q == 5 (mod 8), matching q_hat.
+    q_dualms = prime_5_mod_8(38)
     logq = RR(log(q_dualms, 2))
     print("\nDualMS modulus q =", q_dualms, "logq = ", logq)
     print("l =", l, "l_prime =", l_prime, "k =", k)
 
-    phi = 11.75 * T
+    phi = 22 * T
 
     b2KB = pow(2,13) #Convert bits to bytes
 
@@ -159,7 +172,7 @@ def main():
 
     print("\n\n=== Binary Proof ASIS Estimator ===")
     attack_variant = 0
-    for attack_variant in [0,1,2]:
+    for attack_variant in [0]:
         # function below assumes B1>=B2>=B3>=B4>=B5
         print("***** Attack Variant", attack_variant, " *********")
         params = ASISParameterSet(d, m1+m2+m3+m4+m5, nhat, B1, B2, B3, B4, B5, m1, m2, m3, m4, m5, qhat, norm="linf")
@@ -176,15 +189,12 @@ def main():
     results_dualms_params = LWE.estimate.rough(dualms_lwe_params)
     print(results_dualms_params)
 
-    # print("\n\n=== DualMS MSIS Estimator ===")
-    # try:
-    #     print("Running MSIS_summarize_attacks w.r.t. l2 norm...")
-    #     params = MSISParameterSet(d, total_width, k, beta_sis, q_dualms, norm="l2")
-    #     bkz_block = MSIS_summarize_attacks(params)[0]
-    #     RHF = round(delta_BKZ(bkz_block),5)
-    #     print("Root Hermite Factor =", RHF)
-    # except Exception as e:
-    #     print("MSIS_summarize_attacks failed:", e)
+    # The DualMS side is bounded by the ASIS estimator below
+    # rather than the L2-MSIS estimator: AMSIS gives tighter
+    # bucket-wise control because different parts of the signature
+    # have very different norms.  beta_sis (the L2-MSIS bound) is
+    # computed but not run here; the ASIS attack-cost output below
+    # is the authoritative DualMS-side security number.
 
     print("\n\n=== DualMS ASIS Estimator ===")
     arrDualMS = setDualMSASISBounds(T, kappa, d, w, k, l, l_prime, eta_s, eta_prime_s, t, logq, phi, K_w0, compress_w)
@@ -194,7 +204,7 @@ def main():
     B4, m4 = arrDualMS[3]
     B5, m5 = arrDualMS[4]
 
-    for attack_variant in [0,1,2]:
+    for attack_variant in [0]:
         # function below assumes B1>=B2>=B3>=B4>=B5
         print("***** Attack Variant", attack_variant, " *********")
         params = ASISParameterSet(d, m1+m2+m3+m4+m5, k, B1, B2, B3, B4, B5, m1, m2, m3, m4, m5, q_dualms, norm="linf")

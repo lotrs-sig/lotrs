@@ -410,6 +410,24 @@ impl CrtBackend {
         self.crt_combine(&c1, &c2)
     }
 
+    /// `a * b` where `a` is already in the auxiliary NTT domain.
+    /// Avoids re-transforming `a` across many multiplications — used by
+    /// `Ring::vec_scale` / `vec_add_scaled` / `vec_sub_scaled` to scale
+    /// a single fixed polynomial against a vector of others without
+    /// paying for `a`'s forward NTT on every element.
+    pub fn mul_with_lhs_ntt(&self, a_ntt: &CrtNttPoly, b: &[u64]) -> Vec<u64> {
+        assert_eq!(b.len(), self.d);
+        let (b1, b2) = self.split(b);
+
+        let mut c1 = mul_pointwise_aux::<P1Marker>(&a_ntt.c1, &self.ctx1.forward(&b1));
+        self.ctx1.inverse_in_place(&mut c1);
+
+        let mut c2 = mul_pointwise_aux::<P2Marker>(&a_ntt.c2, &self.ctx2.forward(&b2));
+        self.ctx2.inverse_in_place(&mut c2);
+
+        self.crt_combine(&c1, &c2)
+    }
+
     /// Transform a canonical `[0,q)` polynomial into the auxiliary NTT
     /// domains.  This is useful when the operand is reused across many
     /// multiplications, e.g. public matrices in `mat_vec`.

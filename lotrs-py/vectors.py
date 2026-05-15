@@ -128,6 +128,7 @@ def generate(par=None):
         "signature": {
             "bytes": _hex(sig_bytes),
             "byte_length": len(sig_bytes),
+            "x_seed": _hex(sig["pi"]["x_seed"]),
             "x": x_centered,
             "z_tilde_inf_norm": Rq.vec_inf_norm(sig["z_tilde"]),
             "r_tilde_inf_norm": Rq.vec_inf_norm(sig["r_tilde"]),

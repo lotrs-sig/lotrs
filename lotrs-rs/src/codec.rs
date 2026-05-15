@@ -15,6 +15,9 @@
 
 use crate::params::LoTRSParams;
 use crate::ring::Ring;
+use crate::sample::{xof_sample_challenge, Tag, Xof};
+
+pub const FS_CHALLENGE_BYTES: usize = 16;
 
 /// Codec-level error.  Carries no details about the underlying
 /// deserialization failure — the caller is expected to surface a
@@ -59,7 +62,9 @@ pub struct Proof {
     /// Length is `kappa - 1`; each entry is a `Vec<k>` of R_q polynomials.
     /// For the only supported case `kappa == 1` this is empty.
     pub w_tilde_hi: Vec<Vec<Vec<u64>>>,
-    /// Challenge polynomial `x ∈ C`.
+    /// Interim challenge seed `x_seed`, expanded deterministically to `x`.
+    pub x_seed: Vec<u8>,
+    /// Expanded challenge polynomial `x ∈ C`.
     pub x: Vec<u64>,
     /// `f_1` — flattened `kappa * (beta - 1)` polynomials in R_q.
     pub f1: Vec<Vec<u64>>,
@@ -293,76 +298,9 @@ pub fn unpack_rice(data: &[u8], d: usize, rice_k: u32, bound: i64) -> Result<(Ve
 //  Challenge encoding
 // =========================================================================
 
-fn bits_for_positions(d: usize) -> u32 {
-    core::cmp::max(1, 64 - (d as u64 - 1).leading_zeros())
-}
-
-/// Encode a challenge polynomial (w nonzero ±1 coefficients).
-/// Layout: `w` positions (sorted ascending, `ceil(log2 d)` bits each)
-///   + `w` sign bits (0 = +1, 1 = −1), byte-aligned.
-///
-/// Returns [`CodecError::OutOfRange`] if any coefficient is not in
-/// `{-1, 0, 1}` or if the number of non-zero coefficients is not `w`.
-/// Without this check the encoder would silently project every
-/// non-zero integer to `±1`, so `unpack_challenge(pack_challenge(p))`
-/// would disagree with `p` for malformed input.
-pub fn pack_challenge(poly: &[i64], w: usize, d: usize) -> Result<Vec<u8>> {
-    if poly.len() != d {
-        return Err(CodecError::LengthMismatch);
-    }
-    let pos_bits = bits_for_positions(d);
-    let mut positions: Vec<usize> = Vec::with_capacity(w);
-    for i in 0..d {
-        match poly[i] {
-            0 => {}
-            1 | -1 => positions.push(i),
-            _ => return Err(CodecError::OutOfRange),
-        }
-    }
-    if positions.len() != w {
-        return Err(CodecError::OutOfRange);
-    }
-    let mut wr = BitWriter::new();
-    for &p in &positions {
-        wr.write_bits(p as u64, pos_bits);
-    }
-    for &p in &positions {
-        wr.write_bits(if poly[p] < 0 { 1 } else { 0 }, 1);
-    }
-    wr.pad_to_byte();
-    Ok(wr.into_bytes())
-}
-
-/// Decode a challenge polynomial.  Rejects duplicate / out-of-order
-/// positions and non-binary sign bits.
-pub fn unpack_challenge(data: &[u8], w: usize, d: usize) -> Result<(Vec<i64>, usize)> {
-    let pos_bits = bits_for_positions(d);
-    let mut r = BitReader::new(data);
-
-    let mut positions = Vec::with_capacity(w);
-    for _ in 0..w {
-        let p = r.read_bits(pos_bits)? as usize;
-        if p >= d {
-            return Err(CodecError::OutOfRange);
-        }
-        if let Some(&last) = positions.last() {
-            if p <= last {
-                return Err(CodecError::NonCanonical);
-            }
-        }
-        positions.push(p);
-    }
-    let mut signs = Vec::with_capacity(w);
-    for _ in 0..w {
-        signs.push(r.read_bits(1)? as u8);
-    }
-    r.check_padding()?;
-
-    let mut poly = vec![0i64; d];
-    for (&p, &s) in positions.iter().zip(signs.iter()) {
-        poly[p] = if s == 1 { -1 } else { 1 };
-    }
-    Ok((poly, r.consumed_bytes()))
+fn expand_challenge_seed(x_seed: &[u8], w: usize, d: usize) -> Vec<i64> {
+    let mut xof = Xof::new(x_seed, &[Tag::Bytes(b"challenge")]);
+    xof_sample_challenge(&mut xof, w, d)
 }
 
 // =========================================================================
@@ -548,10 +486,16 @@ impl LoTRSCodec {
             }
         }
 
-        // x — challenge
+        // x_seed — interim challenge seed; x is expanded internally
+        if sig.pi.x_seed.len() != FS_CHALLENGE_BYTES {
+            return Err(CodecError::LengthMismatch);
+        }
         check_len(&sig.pi.x)?;
-        let x_centred = r_q.centered(&sig.pi.x);
-        out.extend_from_slice(&pack_challenge(&x_centred, par.w, par.d)?);
+        let x_expected = r_q.from_centered(&expand_challenge_seed(&sig.pi.x_seed, par.w, par.d));
+        if sig.pi.x != x_expected {
+            return Err(CodecError::NonCanonical);
+        }
+        out.extend_from_slice(&sig.pi.x_seed);
 
         // f1 — Rice, R_q
         if sig.pi.f1.len() != par.kappa * (par.beta - 1) {
@@ -671,14 +615,15 @@ impl LoTRSCodec {
             idx += par.k;
         }
 
-        // x — challenge
-        if pos >= data.len() {
+        // x_seed — interim challenge seed, followed by implicit expansion to x
+        if data.len().saturating_sub(pos) < FS_CHALLENGE_BYTES {
             return Err(CodecError::Truncated);
         }
-        let (x_centred, consumed) = unpack_challenge(&data[pos..], par.w, par.d)?;
+        let x_seed = data[pos..pos + FS_CHALLENGE_BYTES].to_vec();
+        pos += FS_CHALLENGE_BYTES;
+        let x_centred = expand_challenge_seed(&x_seed, par.w, par.d);
         let r_q = Ring::new(par.q, par.d);
         let x = r_q.from_centered(&x_centred);
-        pos += consumed;
 
         // helper — consume Rice-coded polys
         let consume_rice = |data: &[u8],
@@ -737,6 +682,7 @@ impl LoTRSCodec {
             pi: Proof {
                 b_bin_hi,
                 w_tilde_hi,
+                x_seed,
                 x,
                 f1,
                 z_b,
@@ -807,60 +753,6 @@ mod tests {
     }
 
     #[test]
-    fn challenge_roundtrip() {
-        let d = 32;
-        let mut poly = vec![0i64; d];
-        poly[0] = 1;
-        poly[3] = -1;
-        poly[7] = 1;
-        poly[31] = -1;
-        let enc = pack_challenge(&poly, 4, d).unwrap();
-        let (dec, _) = unpack_challenge(&enc, 4, d).unwrap();
-        assert_eq!(dec, poly);
-    }
-
-    #[test]
-    fn challenge_rejects_non_pm_one_coefficients() {
-        // poly[3] = 2 must be rejected, not silently normalised to +1.
-        let d = 32;
-        let mut poly = vec![0i64; d];
-        poly[0] = 1;
-        poly[3] = 2;
-        poly[7] = -1;
-        poly[31] = 1;
-        assert!(matches!(
-            pack_challenge(&poly, 4, d),
-            Err(CodecError::OutOfRange)
-        ));
-    }
-
-    #[test]
-    fn challenge_rejects_wrong_length() {
-        // poly length != d
-        let short = vec![1i64, 0, -1];
-        assert!(matches!(
-            pack_challenge(&short, 2, 32),
-            Err(CodecError::LengthMismatch)
-        ));
-    }
-
-    #[test]
-    fn challenge_rejects_unsorted_positions() {
-        // hand-build a buffer with positions [5, 3, …] (not ascending)
-        let d = 32;
-        let pos_bits = bits_for_positions(d);
-        let mut w = BitWriter::new();
-        w.write_bits(5, pos_bits);
-        w.write_bits(3, pos_bits);
-        w.write_bits(0, 1);
-        w.write_bits(0, 1); // sign bits
-        w.pad_to_byte();
-        let buf = w.into_bytes();
-        let res = unpack_challenge(&buf, 2, d);
-        assert!(matches!(res, Err(CodecError::NonCanonical)));
-    }
-
-    #[test]
     fn pk_roundtrip_synthetic() {
         let par = TEST_PARAMS;
         let codec = LoTRSCodec::new(par);
@@ -868,7 +760,7 @@ mod tests {
         let pk: Vec<Vec<u64>> = (0..par.k)
             .map(|i| {
                 (0..par.d)
-                    .map(|j| ((i as u64 * 31 + j as u64 * 997) % par.q))
+                    .map(|j| (i as u64 * 31 + j as u64 * 997) % par.q)
                     .collect()
             })
             .collect();
@@ -893,6 +785,7 @@ mod tests {
             pi: Proof {
                 b_bin_hi,
                 w_tilde_hi: vec![], // kappa == 1
+                x_seed: vec![0u8; FS_CHALLENGE_BYTES],
                 x: vec![0u64; par.d],
                 f1: vec![vec![0u64; par.d]; par.kappa * (par.beta - 1)],
                 z_b: vec![vec![0u64; par.d]; par.n_hat + par.k_hat],

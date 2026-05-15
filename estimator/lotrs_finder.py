@@ -341,7 +341,7 @@ def setLWERank(RHF, d, logq, B, uniform=True):
 """------------------------------------------------------------------------------------------------------------------"""
 """Bin ASIS functions"""
 #Set ASIS bounds (B_i, m_i) for binary proof
-def setBinASISBounds(beta, kappa, d, w, nhat, khat, phi_a, phi_b, K_b, eps_total):
+def setBinASISBounds(beta, kappa, d, w, nhat, khat, phi_a, phi_b, K_b, eps_total, mu_BG_target=RR(1.01)):
     #Initialise 2d array to be sorted (since ASIS code requires it)
     arr = []
 
@@ -374,36 +374,17 @@ def setBinASISBounds(beta, kappa, d, w, nhat, khat, phi_a, phi_b, K_b, eps_total
     arr.append([B_g0, m_g0])
     print("B_g0 =", log(B_g0, 2))
 
-    # print("\n=== set ASIS bounds max ===") #These bounds are used in the worst-case
-
-    # B_f1 = RR(6 * phi_a * sqrt(kappa * w))
-    # m_f1 = kappa*(beta-1)
-    # arr.append([B_f1, m_f1])
-    # print("B_f1 =", log(B_f1, 2))
-
-    # B_f0 = RR(1+(beta-1)*B_f1)
-    # m_f0 = kappa
-    # arr.append([B_f0, m_f0])
-    # print("B_f0 =", log(B_f0, 2))
-
-    # B_g0 = RR(d*pow((beta-1)*B_f1, 2))
-    # m_g0 = kappa
-    # arr.append([B_g0, m_g0])
-    # print("B_g0 =", log(B_g0, 2))
-
-    # B_g1 = RR(d*pow(B_f1,2))
-    # m_g1 = kappa*(beta-1)
-    # arr.append([B_g1, m_g1])
-    # print("B_g1 =", log(B_g1, 2))
-    B_b = sqrt(d* nhat * khat)*w
+    B_b = sqrt(d*(nhat + khat))*w
 
     B_zb = RR(6*phi_b*B_b)
     m_zb = nhat+khat
     arr.append([B_zb, m_zb])
     print("B_zb =", log(B_zb, 2))
 
-    # choose / derive K_a
-    K_a = round(log((nhat*d*w*pow(2, K_b)), 2))
+    # choose / derive K_a so that mu_BG is close to the target
+    mu_BG_target = RR(mu_BG_target)
+    K_a = ceil(log((nhat*d*(w*pow(2, K_b)-1))/log(mu_BG_target), 2))
+    print("mu_BG_target =", mu_BG_target)
     print("K_a =", K_a)
 
     # actual dropped-bit bounds from the compressed binding proof
@@ -489,7 +470,7 @@ def setBinASISRank(d, nhat, khat, RHF_max, logqhat, arr):
             return sisrank, False
 
 #Get params for binary proof MLWE and MSIS
-def findBinParams(beta, kappa, logq_min, logq_max, RHF_max, phi_a, phi_b, K_b, eps_total):
+def findBinParams(beta, kappa, logq_min, logq_max, RHF_max, phi_a, phi_b, K_b, eps_total, mu_BG_target=RR(1.01)):
     d_arr = [128,256] #Ring dim
     w = -1 #Challenge Hamming weight
     x_inf_norm = -1 #Challenge infinity norm
@@ -498,7 +479,7 @@ def findBinParams(beta, kappa, logq_min, logq_max, RHF_max, phi_a, phi_b, K_b, e
     bound_arr = []
     output_arr = []
     
-    # Cost search loop: standard ASIS / approximate-SIS attack-cost sweep over candidate dimensions.
+    # Parameter search loop: standard ASIS / approximate-SIS attack-cost sweep over candidate dimensions.
     for d in d_arr:
         try:
             w, x_inf_norm = infnorm_weight[128, d]
@@ -515,7 +496,7 @@ def findBinParams(beta, kappa, logq_min, logq_max, RHF_max, phi_a, phi_b, K_b, e
             boolChecks = False
             while((nhat*d <= 8192) and not boolChecks):
                 #print("nhat =", nhat, "x", "d =", d, "=", nhat*d)
-                bound_arr = setBinASISBounds(beta, kappa, d, w, nhat, khat, phi_a, phi_b, K_b, eps_total)
+                bound_arr = setBinASISBounds(beta, kappa, d, w, nhat, khat, phi_a, phi_b, K_b, eps_total, mu_BG_target)
                 _, boolChecks = setBinASISRank(d, nhat, khat, RHF_max, logq, bound_arr)
                 if (boolChecks == False):
                     nhat += 10           
@@ -524,7 +505,7 @@ def findBinParams(beta, kappa, logq_min, logq_max, RHF_max, phi_a, phi_b, K_b, e
             while(boolChecks):
                 output_arr.append([d, logq, khat, nhat, boolChecks])
                 nhat-=1
-                bound_arr = setBinASISBounds(beta, kappa, d, w, nhat, khat, phi_a, phi_b, K_b, eps_total)
+                bound_arr = setBinASISBounds(beta, kappa, d, w, nhat, khat, phi_a, phi_b, K_b, eps_total, mu_BG_target)
                 nhat, boolChecks = setBinASISRank(d, nhat, khat, RHF_max, logq, bound_arr)  
     
     return output_arr
@@ -615,7 +596,7 @@ def findDualMSParams(T, kappa, B, eta_s, eta_prime_s, t, logq_min, logq_max, RHF
     
     output_arr = []
     
-    # Cost search loop: standard ASIS / approximate-SIS attack-cost sweep over candidate dimensions.
+    # Parameter search loop: standard ASIS / approximate-SIS attack-cost sweep over candidate dimensions.
     for d in d_arr:
         try:
             w, x_inf_norm = infnorm_weight[128, d]
@@ -899,10 +880,10 @@ def main():
     eta_s, eta_prime_s = 1, 1 #Smoothing param
 
     #Rej sampling slack factors
-    phi_a = 50
+    phi_a = 24
     phi_b = 4
-
-    phi = 496
+    phi = 22 * T
+    mu_BG_target = RR(1.01)
 
     #Set probability that bounds on f_0, f_1, g_0, g_1 will reject
     eps_total = RR(0.01)
@@ -918,14 +899,14 @@ def main():
     #Check whether to compress \tilde{w}_0
     compress_w = True
 
-    #Binary proof MLWE + MSIS
-    output_bin_arr = findBinParams(beta, kappa, logqhat_min, logqhat_max, RHF_max, phi_a, phi_b, K_b, eps_total)
-
-    #DualMS MLWE + MSIS
-    #output_dualms_arr = findDualMSParams(T, kappa, B, eta_s, eta_prime_s, t, logq_min, logq_max, RHF_max, phi, K_w0, compress_w)
-
-    #DualMS MLWE + ASIS
-    #output_dualms_arr = findDualMSASISParams(T, kappa, B, eta_s, eta_prime_s, t, logq_min, logq_max, RHF_max, phi, K_w0, compress_w)
+    # Binary proof MLWE + ASIS sweep.  Sister sweeps for the DualMS
+    # side are exposed via findDualMSParams() (L2 MSIS bound) and
+    # findDualMSASISParams() (per-bucket ASIS bound); the latter is
+    # what lotrs_estimate.py runs at the chosen point.  Enable here
+    # if you need to re-derive the DualMS dimensions from scratch
+    # rather than validate at the published parameters.
+    output_bin_arr = findBinParams(beta, kappa, logqhat_min, logqhat_max, RHF_max,
+                                   phi_a, phi_b, K_b, eps_total, mu_BG_target)
 
 if __name__ == "__main__":
     main()

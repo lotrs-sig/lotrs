@@ -34,7 +34,7 @@ python aux_ntt.py         # auxiliary-prime NTT, CRT reconstruction vs schoolboo
 python sample.py          # determinism, Gaussian tail, challenge weight
 python params.py          # prints derived parameter values for TEST, BENCH, and PRODUCTION
 python lotrs.py           # full keygen → sign → verify cycle
-python codec.py           # Rice round-trip, challenge round-trip, size report
+python codec.py           # Rice round-trip + size report
 ```
 
 ## Programmatic usage
@@ -166,17 +166,19 @@ Expected ~33 signing attempts per signature (μ·μ_a·μ_b·μ_BG·μ_fg at the
 
 ### BENCH_4OF32 (4-of-32 benchmark-only variant)
 
-The three d=128 sets all share the same lattice (`k=12, l=5, l'=6, n̂=10, k̂=8`, `q = 274877906837`, `q_hat = 8589934237`, `phi_a=50, phi_b=4`, `K_A=20, K_B=5, K_w=5`, `mask_sampler="facct"`). Only `beta`, `T`, and `phi = 11.75·T` differ. All are tracked against `estimator/lotrs_estimate.py`.
+The three d=128 sets all share the same lattice (`k=12, l=5, l'=6, n̂=11, k̂=8`, `q = q_hat = 274877906837`, `phi_a=24, phi_b=4`, `K_A=28, K_B=5, K_w=5`, `mask_sampler="facct"`). Only `beta`, `T`, and `phi = 22·T` differ. All are tracked against `estimator/lotrs_estimate.py`.
+
+"Expected attempts" below is the estimator heuristic μ_total; empirical attempts may be slightly higher because the signer additionally performs a `w̃₀`-stability restart on top of the rejection checks counted here.
 
 Probes the smaller-T regime against the same MSIS lattice as `BENCH_PARAMS`.
 
 | Parameter | Value |
 |-----------|-------|
 | beta, N, T | 32, 32, 4 |
-| phi | 47.0 (= 11.75 · T) |
+| phi | 88.0 (= 22 · T) |
 | Signature size | ~22 KB |
-| Expected attempts | ~12.3 |
-| σ₀ | ≈ 2.1 × 10⁶ |
+| Expected attempts (heuristic) | ~3.0 |
+| σ₀ | ≈ 3.9 × 10⁶ |
 
 Not independently re-run by `estimator/lotrs_estimate.py` for this specific T — security argument is qualitative (smaller T against the same MSIS lattice). Use `BENCH_PARAMS` or `PRODUCTION_PARAMS` for any security-sensitive claim.
 
@@ -187,11 +189,11 @@ Recommended benchmark point.
 | Parameter | Value |
 |-----------|-------|
 | beta, N, T | 32, 32, 16 |
-| phi | 188.0 (= 11.75 · T) |
+| phi | 352.0 (= 22 · T) |
 | Signature size | ~23 KB |
-| Expected attempts | ~12.3 |
-| σ₀ | ≈ 8.5 × 10⁶ |
-| Security (BKZ cost_pq) | 92 (binary ASIS) / 86 (DualMS ASIS) |
+| Expected attempts (heuristic) | ~3.0 |
+| σ₀ | ≈ 1.6 × 10⁷ |
+| Security (BKZ cost_pq) | 87 (binary ASIS) / 90 (DualMS ASIS) |
 
 ### PRODUCTION_PARAMS (Table 3 of the paper)
 
@@ -200,11 +202,11 @@ Full 50-of-100 set. Matches `estimator/LoTRS-Estimate-Output-N100T50.txt`. At d=
 | Parameter | Value |
 |-----------|-------|
 | beta, N, T | 100, 100, 50 |
-| phi | 587.5 (= 11.75 · T) |
+| phi | 1100.0 (= 22 · T) |
 | Signature size | ~35 KB |
-| Expected attempts | ~12.3 |
-| σ₀ | ≈ 2.6 × 10⁷ |
-| Security (BKZ cost_pq) | 92 (binary ASIS) / 86 (DualMS ASIS) |
+| Expected attempts (heuristic) | ~3.0 |
+| σ₀ | ≈ 4.9 × 10⁷ |
+| Security (BKZ cost_pq) | 87 (binary ASIS) / 90 (DualMS ASIS) |
 
 ## Benchmarks
 
@@ -213,11 +215,13 @@ Rust implementation, not from Python.  The authoritative numbers live
 in [`../lotrs-rs/README.md`](../lotrs-rs/README.md) § *Benchmarks* —
 see there for the full `N × T` grid at `N ∈ {32, 100}` and the
 threshold sweep, plus the standalone RS (`T = 1`) and DualMS (`N = 1`)
-edges, along with the averaging methodology (12 / 10 / 8 / 5
-signing-seed samples per cell).  Empirical attempt-count means are in
-the 25–40 range, materially above the estimator's `μ_total ≈ 12.3`
-heuristic because the implementation also restarts on the additional
-`w̃₀`-stability check used by the κ=1 commitment-compression path.
+edges, along with the averaging methodology (`N = 100` signing-seed
+samples per cell, interleaved across cells so frequency-scaling and
+scheduler noise average evenly).  Under v1.5 parameters the
+estimator heuristic gives `μ_total ≈ 3.0`; the empirical mean is in
+the 6–7 range because the implementation also restarts on the
+additional `w̃₀`-stability check used by the κ=1
+commitment-compression path.
 
 `examples/bench.rs` supports two modes:
 
@@ -231,8 +235,8 @@ cargo run --release --example bench -- \
     --grid "32,1:4:8:16:32;100,1:5:10:25:50;1,2:4:8:16"
 ```
 
-Full-grid wall-clock for the canonical reproduction is ~15 minutes on
-a Ryzen AI 9 HX 370 (release build, single-threaded).
+Full-grid wall-clock for the canonical reproduction is ~8 minutes on
+a Ryzen AI 9 HX 370 (release build, `rayon` multi-threaded).
 
 ## Mapping to the paper
 

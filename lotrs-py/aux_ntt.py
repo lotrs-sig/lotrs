@@ -283,7 +283,7 @@ if __name__ == "__main__":
 
     rng = random.Random(1)
     for d in SUPPORTED_D:
-        for q_scheme in (274877906837, 8589934237):
+        for q_scheme in (274877906837,):
             backend = CRTBackend(q_scheme, d)
             for _ in range(3):
                 a = [rng.randrange(q_scheme) for _ in range(d)]

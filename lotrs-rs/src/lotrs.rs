@@ -14,8 +14,10 @@
 
 use std::time::{Duration, Instant};
 
+use rayon::prelude::*;
+
 use crate::cdt;
-use crate::codec::{LoTRSCodec, Proof as _Proof, Signature};
+use crate::codec::{LoTRSCodec, Proof as _Proof, Signature, FS_CHALLENGE_BYTES};
 use crate::params::{LoTRSParams, MaskSamplerKind};
 use crate::ring::{NttPolyMat, Poly, PolyMat, PolyVec, Ring};
 use crate::sample::{
@@ -42,12 +44,9 @@ pub struct SignTimings {
     /// w̃₀ stability check, response z_u, BG rejection, r_u — summed
     /// over T signers and over every attempt.
     pub sign2_rest: Duration,
-    /// The binary ring proof (`sign_bin`) — summed over T signers and
-    /// over every attempt.  Each of the T signers runs `sign_bin`
-    /// independently in this reference implementation; `sagg` then
-    /// asserts they all produced the same `pi`.  An optimised multi-
-    /// signer protocol would compute `sign_bin` once and broadcast,
-    /// in which case the standalone RS cost is this value divided by T.
+    /// The binary ring proof (`sign_bin`) — one shared proof per
+    /// attempt.  The resulting `pi` is cloned into each per-signer
+    /// transcript before aggregation.
     pub sign_bin: Duration,
     /// Threshold aggregation across the T transcripts.
     pub sagg: Duration,
@@ -246,10 +245,48 @@ impl LoTRS {
     }
 
     /// 256-bit digest of the canonical PK-table serialization.
+    /// Equivalent to `Xof::new(pk_table_bytes(pk_table), [Tag::Bytes(b"pk")]).read_array::<32>()`
+    /// but feeds each coefficient straight into the SHAKE256 absorber so
+    /// we never materialize the 8-byte-per-coefficient hash preimage
+    /// (~58.6 MiB at PRODUCTION scale; distinct from the ~34.8 MiB
+    /// fixed-width encoded ring-PK table).
     pub fn pk_table_hash(&self, pk_table: &[Vec<Vec<Poly>>]) -> [u8; 32] {
-        let pk_bytes = self.pk_table_bytes(pk_table);
-        let mut x = Xof::new(&pk_bytes, &[Tag::Bytes(b"pk")]);
-        x.read_array::<32>()
+        use sha3::{
+            digest::{ExtendableOutput, Update, XofReader},
+            Shake256,
+        };
+
+        // Buffered chunked absorb: filling a 4 KiB scratch and feeding it
+        // in one `update` call is materially faster than 8 bytes at a
+        // time because each `update` walks the SHAKE state machine.
+        const CHUNK: usize = 4096;
+        let mut h = Shake256::default();
+        let mut scratch = [0u8; CHUNK];
+        let mut pos = 0usize;
+
+        for col in pk_table {
+            for pk in col {
+                for poly in pk {
+                    for &c in poly {
+                        scratch[pos..pos + 8].copy_from_slice(&c.to_le_bytes());
+                        pos += 8;
+                        if pos == CHUNK {
+                            h.update(&scratch);
+                            pos = 0;
+                        }
+                    }
+                }
+            }
+        }
+        if pos > 0 {
+            h.update(&scratch[..pos]);
+        }
+        h.update(b"pk");
+
+        let mut reader = h.finalize_xof();
+        let mut out = [0u8; 32];
+        reader.read(&mut out);
+        out
     }
 
     /// `H_agg(H(PK), u) -> alpha_u ∈ R_q`  (challenge-set element).
@@ -291,14 +328,14 @@ impl LoTRS {
     /// Coefficients are hashed as 8-byte *signed* LE (matching Python's
     /// `int.to_bytes(8, "little", signed=True)`).  The scheme's moduli
     /// `q, q_hat < 2^40 < 2^63`, so the cast is lossless.
-    pub fn hash_fs(
+    pub fn hash_fs_seed(
         &self,
         mu: &[u8],
         a_hi: &[Poly],
         b_hi: &[Poly],
         w_hi: &[Vec<Poly>],
         pk_hash: &[u8; 32],
-    ) -> Poly {
+    ) -> [u8; FS_CHALLENGE_BYTES] {
         use sha3::{
             digest::{ExtendableOutput, Update, XofReader},
             Shake256,
@@ -327,45 +364,28 @@ impl LoTRS {
         }
         h.update(pk_hash);
 
-        // The resulting XOF is then used to sample the challenge.
-        // We can't stream this directly through `Xof::new` because the
-        // XOF state is already populated, so use the challenge sampler
-        // over the reader directly.
         let mut reader = h.finalize_xof();
-        let par = &self.par;
-        let pos_bits = core::cmp::max(1, 64 - ((par.d as u64 - 1).leading_zeros()));
-        let pos_bytes = ((pos_bits + 7) / 8) as usize;
-        let pos_mask: u64 = if pos_bits == 64 {
-            u64::MAX
-        } else {
-            (1u64 << pos_bits) - 1
-        };
+        let mut seed = [0u8; FS_CHALLENGE_BYTES];
+        reader.read(&mut seed);
+        seed
+    }
 
-        let mut positions: Vec<usize> = Vec::with_capacity(par.w);
-        let mut seen = vec![false; par.d];
-        while positions.len() < par.w {
-            let mut buf = [0u8; 8];
-            reader.read(&mut buf[..pos_bytes]);
-            let raw = u64::from_le_bytes(buf) & pos_mask;
-            if raw >= par.d as u64 {
-                continue;
-            }
-            let idx = raw as usize;
-            if !seen[idx] {
-                seen[idx] = true;
-                positions.push(idx);
-            }
-        }
-        let sign_nbytes = (par.w + 7) / 8;
-        let mut sign_bytes = vec![0u8; sign_nbytes];
-        reader.read(&mut sign_bytes);
+    pub fn expand_fs_challenge(&self, x_seed: &[u8]) -> Poly {
+        let mut xof = Xof::new(x_seed, &[Tag::Bytes(b"challenge")]);
+        let raw = xof_sample_challenge(&mut xof, self.par.w, self.par.d);
+        self.r_q.from_centered(&raw)
+    }
 
-        let mut coeffs = vec![0i64; par.d];
-        for (i, &pos) in positions.iter().enumerate() {
-            let bit = (sign_bytes[i / 8] >> (i % 8)) & 1;
-            coeffs[pos] = if bit == 1 { -1 } else { 1 };
-        }
-        self.r_q.from_centered(&coeffs)
+    pub fn hash_fs(
+        &self,
+        mu: &[u8],
+        a_hi: &[Poly],
+        b_hi: &[Poly],
+        w_hi: &[Vec<Poly>],
+        pk_hash: &[u8; 32],
+    ) -> Poly {
+        let x_seed = self.hash_fs_seed(mu, a_hi, b_hi, w_hi, pk_hash);
+        self.expand_fs_challenge(&x_seed)
     }
 
     // =================================================================
@@ -385,17 +405,20 @@ impl LoTRS {
         let alphas: Vec<Poly> = (0..par.T)
             .map(|u| self.hash_agg(pk_hash, u as u32))
             .collect();
-        let mut out = Vec::with_capacity(par.N());
-        for i in 0..par.N() {
-            let mut acc: PolyVec = self.r_q.vec_zero(par.k);
-            for u in 0..par.T {
-                // acc += α_u · pk_table[i][u]  (fused, no intermediate Vec)
-                self.r_q
-                    .vec_add_scaled(&mut acc, &alphas[u], &pk_table[i][u]);
-            }
-            out.push(acc);
-        }
-        out
+        // Outer loop over rows is embarrassingly parallel: each `i` writes
+        // its own PolyVec, with no shared mutable state.  `collect()`
+        // preserves the (0..N) order.
+        (0..par.N())
+            .into_par_iter()
+            .map(|i| {
+                let mut acc: PolyVec = self.r_q.vec_zero(par.k);
+                for u in 0..par.T {
+                    self.r_q
+                        .vec_add_scaled(&mut acc, &alphas[u], &pk_table[i][u]);
+                }
+                acc
+            })
+            .collect()
     }
 
     // =================================================================
@@ -531,20 +554,26 @@ impl LoTRS {
             return (false, zero);
         }
 
-        let mut pk_table: Vec<Vec<Vec<Poly>>> = Vec::with_capacity(par.N());
-        for col in pk_table_bytes {
-            if col.len() != par.T {
-                return (false, zero);
-            }
-            let mut col_pks = Vec::with_capacity(par.T);
-            for pk_bytes in col {
-                match self.codec.pk_decode(pk_bytes) {
-                    Ok(pk) => col_pks.push(pk),
-                    Err(_) => return (false, zero),
+        // PK decode is embarrassingly parallel: each of the N columns
+        // decodes T independent keys, and `pk_decode` only borrows
+        // `self.codec` immutably.  `par_iter().collect::<Result<_, _>>`
+        // preserves the (col, row) order and short-circuits on the
+        // first malformed entry.
+        let pk_table: Vec<Vec<Vec<Poly>>> = match pk_table_bytes
+            .par_iter()
+            .map(|col| -> Result<Vec<Vec<Poly>>, ()> {
+                if col.len() != par.T {
+                    return Err(());
                 }
-            }
-            pk_table.push(col_pks);
-        }
+                col.iter()
+                    .map(|pk_bytes| self.codec.pk_decode(pk_bytes).map_err(|_| ()))
+                    .collect()
+            })
+            .collect::<Result<Vec<_>, _>>()
+        {
+            Ok(t) => t,
+            Err(_) => return (false, zero),
+        };
 
         let sig = match self.codec.sig_decode(sig_bytes) {
             Ok(s) => s,
@@ -645,6 +674,13 @@ impl LoTRS {
         // --- reconstruct full f, f0 bound, g0/g1 bounds, A_hat_bin ----
         // All of this is the binary ring proof.
         let bin_t0 = Instant::now();
+        if sig.pi.x_seed.len() != FS_CHALLENGE_BYTES
+            || self.expand_fs_challenge(&sig.pi.x_seed) != sig.pi.x
+        {
+            timings.verify_bin += bin_t0.elapsed();
+            return Err(());
+        }
+
         let f_full = self.reconstruct_f(&sig.pi.x, &sig.pi.f1);
 
         // B_f0 = 1 + tau_{f_0} * sqrt(beta-1) * sigma_a.  (Fig. 6 line 4.)
@@ -730,15 +766,9 @@ impl LoTRS {
         let a_mat = self.expand_A(pp);
         let a_mat_ntt = rq.mat_to_ntt(&a_mat);
 
-        // full_z = z_tilde || 0^k, full_r = r_tilde || 0^k
-        let zero_k: PolyVec = rq.vec_zero(par.k);
-        let mut full_z: PolyVec = sig.z_tilde.clone();
-        full_z.extend(zero_k.iter().cloned());
-        let mut full_r: PolyVec = sig.r_tilde.clone();
-        full_r.extend(zero_k.iter().cloned());
-
-        // A_bar · full_z = A·z_tilde + 0   (since right half of full_z is 0)
-        // B_bar · full_r = B·r_tilde + 0
+        // A_bar · z_tilde̅ = A · z_tilde + 0   (right half of the
+        //   "augmented" z is zero, so we just feed z_tilde directly to
+        //   mat_vec on the un-augmented A).  Same for B and r_tilde.
         let lhs_a = match a_mat_ntt
             .as_ref()
             .and_then(|m| rq.mat_vec_ntt(m, &sig.z_tilde))
@@ -763,17 +793,30 @@ impl LoTRS {
             x_pow.push(rq.mul(&last, &sig.pi.x));
         }
 
-        // pk_sum = sum_i (prod_j f_{j, i_j}) · t_tilde_i
-        let mut pk_sum = rq.vec_zero(par.k);
-        for i in 0..par.N() {
-            let digits = Self::base_digits(i, par.beta, par.kappa);
-            let mut selector = rq.one();
-            for j in 0..par.kappa {
-                selector = rq.mul(&selector, &f_full[j][digits[j]]);
-            }
-            let scaled = rq.vec_scale(&selector, &agg_keys[i]);
-            pk_sum = rq.vec_add(&pk_sum, &scaled);
-        }
+        // pk_sum = sum_i (prod_j f_{j, i_j}) · t_tilde_i.
+        // For kappa == 1 the product degenerates to the single f-factor —
+        // skip the mul-by-one preamble (saves N=beta NTT multiplications
+        // at d=128).  The N independent scaled-vector terms are computed
+        // in parallel and tree-reduced; addition in R_q is associative
+        // so the result is byte-identical to the serial accumulation.
+        let pk_sum = (0..par.N())
+            .into_par_iter()
+            .map(|i| {
+                let digits = Self::base_digits(i, par.beta, par.kappa);
+                let selector_owned: Poly;
+                let selector: &Poly = if par.kappa == 1 {
+                    &f_full[0][digits[0]]
+                } else {
+                    let mut acc = f_full[0][digits[0]].clone();
+                    for j in 1..par.kappa {
+                        acc = rq.mul(&acc, &f_full[j][digits[j]]);
+                    }
+                    selector_owned = acc;
+                    &selector_owned
+                };
+                rq.vec_scale(selector, &agg_keys[i])
+            })
+            .reduce(|| rq.vec_zero(par.k), |a, b| rq.vec_add(&a, &b));
 
         let mut w_hat_0 = rq.vec_sub(&pk_sum, &lhs);
         for j in 1..par.kappa {
@@ -797,7 +840,7 @@ impl LoTRS {
             w_hi_for_hash.push(j_vec.clone());
         }
 
-        let x_check = self.hash_fs(
+        let c_check = self.hash_fs_seed(
             mu,
             &a_hat_hi,
             &sig.pi.b_bin_hi,
@@ -806,7 +849,7 @@ impl LoTRS {
         );
         timings.verify_dualms += dm_t0.elapsed();
 
-        if x_check == sig.pi.x {
+        if c_check.as_slice() == sig.pi.x_seed.as_slice() {
             Ok(())
         } else {
             Err(())
@@ -841,13 +884,13 @@ impl LoTRS {
                 row[i] = xof_sample_gaussian(&mut x, self.cdt_sigma_a, par.lam, par.d);
             }
             // a_{j, 0} = -sum_{i >= 1} a_{j, i}
-            let mut acc = vec![0i64; par.d];
+            let mut a_j0 = vec![0i64; par.d];
             for i in 1..par.beta {
                 for c in 0..par.d {
-                    acc[c] += row[i][c];
+                    a_j0[c] -= row[i][c];
                 }
             }
-            row[0] = acc.iter().map(|&v| -v).collect();
+            row[0] = a_j0;
             out.push(row);
         }
         out
@@ -905,21 +948,18 @@ impl LoTRS {
     fn sign1(
         &self,
         ctx: &SigningContext,
-        sk_u: &[Poly],
         row_u: usize,
         ell: usize,
         pk_table: &[Vec<Vec<Poly>>],
-        rho: &[u8],
+        rho: &[u8; 32],
         attempt: u32,
+        p_coeffs: &[Vec<Poly>],
     ) -> (Sign1State, Vec<PolyVec>) {
         let par = &self.par;
         let rq = &self.r_q;
         let kappa = par.kappa;
 
         let alpha_u = &ctx.alphas[row_u];
-
-        let a_coeffs = self.expand_a_coeffs(rho, attempt);
-        let p_coeffs = self.compute_p_coeffs(&a_coeffs, ell);
 
         let a_mat = &ctx.a_mat;
         let b_mat = &ctx.b_mat;
@@ -997,10 +1037,9 @@ impl LoTRS {
 
         let state = Sign1State {
             ell,
-            sk_u: sk_u.to_vec(),
             y_list,
             r_list,
-            rho: rho.to_vec(),
+            rho: *rho,
             attempt,
             row_u,
         };
@@ -1011,30 +1050,39 @@ impl LoTRS {
     //  Sign_2  (Fig. 5)
     // =================================================================
 
-    /// Per-signer round 2.  Returns `None` if any rejection triggers a
-    /// restart; otherwise a per-signer partial transcript.
+    /// Round 2 for the full T-cohort.  Returns `None` on any rejection
+    /// (stability, binary-proof, or per-signer z_u) so the caller can
+    /// restart the attempt.  Computes the shared (`w_tilde`, decompose,
+    /// stability check, `sign_bin`) work *once* per attempt rather
+    /// than T times.  At κ=1 the `w_tilde_0` stability check is
+    /// independent of the FS challenge, so it runs before `sign_bin`
+    /// and lets doomed attempts skip the binary proof entirely.
     ///
-    /// `sign_bin_elapsed` is incremented by the wall-clock time spent
-    /// inside the [`LoTRS::sign_bin`] call so the caller can attribute
+    /// `sign_bin_elapsed` is incremented by the wall-clock spent in
+    /// the single [`LoTRS::sign_bin`] call so the caller can attribute
     /// it separately to the ring (binary-proof) bucket.
-    fn sign2(
+    fn sign2_round(
         &self,
         ctx: &SigningContext,
-        state: &Sign1State,
+        states: &[Sign1State],
+        sks: &[Vec<Poly>],
         mu: &[u8],
         all_coms: &[Vec<PolyVec>],
+        a_coeffs: &[Vec<Vec<i64>>],
         sign_bin_elapsed: &mut Duration,
-    ) -> Option<Sign2Transcript> {
+    ) -> Option<Vec<Sign2Transcript>> {
         let par = &self.par;
         let rq = &self.r_q;
         let kappa = par.kappa;
 
-        // Aggregate commitments  w_tilde_j = sum_u w_{u', j}
+        // === Shared work — once per attempt ===
+
+        // Aggregate commitments  w_tilde_j = sum_u w_{u, j}
         let mut w_tilde: Vec<PolyVec> = Vec::with_capacity(kappa);
         for j in 0..kappa {
             let mut acc = rq.vec_zero(par.k);
-            for u_prime in 0..par.T {
-                rq.vec_add_assign(&mut acc, &all_coms[u_prime][j]);
+            for u in 0..par.T {
+                rq.vec_add_assign(&mut acc, &all_coms[u][j]);
             }
             w_tilde.push(acc);
         }
@@ -1051,79 +1099,84 @@ impl LoTRS {
             w_tilde_lo.push(lo_j);
         }
 
-        // Binary selection proof — timed separately so the caller can
-        // bucket it under the ring (RS) cost rather than DualMS.
+        // w_tilde_0 stability check.  At κ=1, M_w = 0 (the M_w sum is
+        // over j >= 1), so the threshold is independent of x — run it
+        // before sign_bin to skip the binary proof on doomed attempts.
+        // The constructor rejects κ > 1, so this path always applies.
+        assert_eq!(kappa, 1, "sign2_round assumes kappa == 1");
+        if (rq.vec_inf_norm(&w_tilde_lo[0]) as u128) > (1u128 << (par.K_w - 1)) {
+            return None;
+        }
+
+        // Binary selection proof — shared across all T signers (the
+        // inputs (ctx, ell, mu, w_tilde_hi, rho, attempt, a_coeffs)
+        // contain no per-signer data).  Compute once, clone into each
+        // Sign2Transcript so sagg's equality check still has something
+        // to assert against.
         let bin_t0 = Instant::now();
-        let pi_opt = self.sign_bin(ctx, state.ell, mu, &w_tilde_hi, &state.rho, state.attempt);
+        let rho = &states[0].rho;
+        let attempt = states[0].attempt;
+        let ell = states[0].ell;
+        let pi = match self.sign_bin(ctx, ell, mu, &w_tilde_hi, rho, attempt, a_coeffs) {
+            Some(p) => p,
+            None => {
+                *sign_bin_elapsed += bin_t0.elapsed();
+                return None;
+            }
+        };
         *sign_bin_elapsed += bin_t0.elapsed();
-        let pi = pi_opt?;
 
-        let x = pi.x.clone();
+        // === Per-signer work — parallelized over u ∈ [0, T) ===
 
-        // w_tilde_0 stability check
-        //   M_w = sum_{j >= 1} ||x^j||_1 * 2^{K_{w,j}-1}
-        //   (For kappa == 1 the sum is empty and M_w = 0.)
-        let mut m_w: u128 = 0;
-        if kappa > 1 {
-            let mut x_pow = vec![rq.one()];
-            for _ in 0..(kappa - 1) {
-                let last = x_pow.last().unwrap().clone();
-                x_pow.push(rq.mul(&last, &x));
-            }
-            for j in 1..kappa {
-                m_w += rq.l1_norm(&x_pow[j]) * (1u128 << (par.K_w - 1));
-            }
-        }
-        let threshold_w: u128 = (1u128 << (par.K_w - 1)).saturating_sub(m_w);
-        if (rq.vec_inf_norm(&w_tilde_lo[0]) as u128) > threshold_w {
-            return None;
-        }
+        // At κ=1, x_pow = [1, x]; the response simplifies to
+        //   z_u    = coeff·s_u − y_{u,0}
+        //   shift  = coeff·s_u
+        //   r_u    = −r_{u,0}
+        // where coeff = x·α_u (i.e. x_pow[kappa]·α_u).  This skips
+        // three vec_scale-by-1 calls per signer that the κ-general
+        // path would otherwise pay for.
+        //
+        // Each iteration is independent: it borrows only immutable
+        // state (pi, states, sks, ctx, rq), builds its own Xof from a
+        // (row_u, attempt) tag, and produces one Sign2Transcript.
+        // Collecting into `Option<Vec<_>>` short-circuits on the first
+        // rejected signer and propagates the restart upstream while
+        // preserving (0..T) order for sagg.
+        let coeff_x = &pi.x; // x_pow[1] at κ=1
+        (0..par.T)
+            .into_par_iter()
+            .map(|u| {
+                let state = &states[u];
+                let sk_u = &sks[u];
+                let alpha_u = &ctx.alphas[state.row_u];
+                let coeff = rq.mul(coeff_x, alpha_u);
 
-        // Main response z_u = x^kappa * alpha_u * s_u - sum x^j y_{u, j}
-        let mut x_pow = vec![rq.one()];
-        for _ in 0..kappa {
-            let last = x_pow.last().unwrap().clone();
-            x_pow.push(rq.mul(&last, &x));
-        }
-        let alpha_u = &ctx.alphas[state.row_u];
-        let coeff = rq.mul(&x_pow[kappa], alpha_u);
-        let mut z_u = rq.vec_scale(&coeff, &state.sk_u);
-        for j in 0..kappa {
-            let term = rq.vec_scale(&x_pow[j], &state.y_list[j]);
-            z_u = rq.vec_sub(&z_u, &term);
-        }
+                let shift = rq.vec_scale(&coeff, sk_u);
+                let z_u = rq.vec_sub(&shift, &state.y_list[0]);
+                let r_u: PolyVec = state.r_list[0].iter().map(|p| rq.neg(p)).collect();
 
-        // Shift v = x^kappa alpha_u s_u - sum_{j >= 1} x^j y_{u, j}
-        // (Same as z_u but without the j == 0 subtraction.)
-        let mut shift = rq.vec_scale(&coeff, &state.sk_u);
-        for j in 1..kappa {
-            let t = rq.vec_scale(&x_pow[j], &state.y_list[j]);
-            shift = rq.vec_sub(&shift, &t);
-        }
+                // Rejection sampling on z_u — per-signer (xof seeded with row_u).
+                let z_u_signed: Vec<i64> = flatten_centered(rq, &z_u);
+                let shift_signed: Vec<i64> = flatten_centered(rq, &shift);
+                let mut xof_rej = Xof::new(
+                    &state.rho,
+                    &[
+                        Tag::Bytes(b"rej_z"),
+                        Tag::Int(state.row_u as u32),
+                        Tag::Int(state.attempt),
+                    ],
+                );
+                if !rej(&mut xof_rej, &z_u_signed, &shift_signed, par.phi, par.B_0()) {
+                    return None;
+                }
 
-        // Rejection sampling on z_u
-        let z_u_signed: Vec<i64> = flatten_centered(rq, &z_u);
-        let shift_signed: Vec<i64> = flatten_centered(rq, &shift);
-        let mut xof_rej = Xof::new(
-            &state.rho,
-            &[
-                Tag::Bytes(b"rej_z"),
-                Tag::Int(state.row_u as u32),
-                Tag::Int(state.attempt),
-            ],
-        );
-        if !rej(&mut xof_rej, &z_u_signed, &shift_signed, par.phi, par.B_0()) {
-            return None;
-        }
-
-        // Auxiliary response r_u = - sum x^j r_{u, j}
-        let mut r_u: PolyVec = rq.vec_zero(par.l_prime + par.k);
-        for j in 0..kappa {
-            let t = rq.vec_scale(&x_pow[j], &state.r_list[j]);
-            r_u = rq.vec_sub(&r_u, &t);
-        }
-
-        Some(Sign2Transcript { pi, z_u, r_u })
+                Some(Sign2Transcript {
+                    pi: pi.clone(),
+                    z_u,
+                    r_u,
+                })
+            })
+            .collect::<Option<Vec<_>>>()
     }
 
     // =================================================================
@@ -1138,6 +1191,7 @@ impl LoTRS {
         w_tilde_hi: &[PolyVec],
         rho: &[u8],
         attempt: u32,
+        a_coeffs: &[Vec<Vec<i64>>],
     ) -> Option<_Proof> {
         let par = &self.par;
         let rq = &self.r_q;
@@ -1156,8 +1210,6 @@ impl LoTRS {
             row[ell_digits[j]] = rqh.one();
             b_vecs.push(row);
         }
-
-        let a_coeffs = self.expand_a_coeffs(rho, attempt);
 
         // a_flat, c_flat, d_flat over R_qhat
         let mut a_flat: PolyVec = Vec::with_capacity(kappa * beta);
@@ -1246,16 +1298,19 @@ impl LoTRS {
             a_bin_hi.push(hi);
         }
 
-        // Fiat-Shamir challenge
-        let x = self.hash_fs(mu, &a_bin_hi, &b_bin_hi, w_tilde_hi, &ctx.pk_hash);
+        // Fiat-Shamir challenge seed and expansion
+        let x_seed = self.hash_fs_seed(mu, &a_bin_hi, &b_bin_hi, w_tilde_hi, &ctx.pk_hash);
+        let x = self.expand_fs_challenge(&x_seed);
 
-        // z_b = r_a + x * r_b
+        // z_b = r_a + x * r_b; the same `x · r_b` term is also the
+        // shift `v` for the rej_op rejection check, so compute once.
         let x_hat = rqh.from_centered(&rq.centered(&x));
-        let z_b = rqh.vec_add(&r_a, &rqh.vec_scale(&x_hat, &r_b));
+        let x_rb = rqh.vec_scale(&x_hat, &r_b);
+        let z_b = rqh.vec_add(&r_a, &x_rb);
 
         // RejOp on z_b
         let z_b_signed = flatten_centered(rqh, &z_b);
-        let v_signed = flatten_centered(rqh, &rqh.vec_scale(&x_hat, &r_b));
+        let v_signed = flatten_centered(rqh, &x_rb);
         let mut xof_rej_b = Xof::new(rho, &[Tag::Bytes(b"rej_b"), Tag::Int(attempt)]);
         if !rej_op(&mut xof_rej_b, &z_b_signed, &v_signed, par.phi_b, par.B_b()) {
             return None;
@@ -1400,6 +1455,7 @@ impl LoTRS {
         Some(_Proof {
             b_bin_hi,
             w_tilde_hi: w_tilde_hi_rest,
+            x_seed: x_seed.to_vec(),
             x,
             f1: f1_rq,
             z_b,
@@ -1521,39 +1577,48 @@ impl LoTRS {
             let mut rho_xof = Xof::new(signing_seed, &[Tag::Bytes(b"rho"), Tag::Int(attempt)]);
             let rho = rho_xof.read_array::<32>();
 
-            // round 1
+            // Per-attempt deterministic expansion of (rho, attempt, ell).
+            // Identical across all T signers, so hoisted out of the T-loop.
+            let a_coeffs = self.expand_a_coeffs(&rho, attempt);
+            let p_coeffs = self.compute_p_coeffs(&a_coeffs, ell);
+
+            // round 1 — T independent calls; parallelized over signers
+            // via rayon.  All shared inputs (ctx, pk_table, rho, p_coeffs)
+            // are borrowed immutably; each sign1 builds its own XOFs
+            // from `(rho, tag, u, attempt)` so there is no cross-signer
+            // state.  `collect()` preserves the (0..T) order, so the
+            // resulting `states` / `all_coms` are byte-identical to the
+            // serial version.
             let r1_t0 = Instant::now();
-            let mut states: Vec<Sign1State> = Vec::with_capacity(par.T);
-            let mut all_coms: Vec<Vec<PolyVec>> = Vec::with_capacity(par.T);
-            for u in 0..par.T {
-                let (st, com) = self.sign1(&ctx, &sks[u], u, ell, pk_table, &rho, attempt);
-                states.push(st);
-                all_coms.push(com);
-            }
+            let (states, all_coms): (Vec<Sign1State>, Vec<Vec<PolyVec>>) = (0..par.T)
+                .into_par_iter()
+                .map(|u| self.sign1(&ctx, u, ell, pk_table, &rho, attempt, &p_coeffs))
+                .unzip();
             timings.sign1 += r1_t0.elapsed();
 
-            // round 2 — sign2 internally writes its sign_bin sub-time
-            // into `bin_acc`; the rest of sign2's wall-clock lands in
-            // `sign2_rest` after subtraction.
+            // round 2 — sign2_round does the shared work (w_tilde,
+            // decompose, stability check, sign_bin) once and then
+            // iterates the per-signer z_u/r_u/rejection block.
+            // `bin_acc` captures the single sign_bin call; the rest of
+            // round-2 wall-clock lands in `sign2_rest` after subtraction.
             let r2_t0 = Instant::now();
             let mut bin_acc = Duration::ZERO;
-            let mut sigmas: Vec<Sign2Transcript> = Vec::with_capacity(par.T);
-            let mut restart = false;
-            for u in 0..par.T {
-                match self.sign2(&ctx, &states[u], mu, &all_coms, &mut bin_acc) {
-                    Some(s) => sigmas.push(s),
-                    None => {
-                        restart = true;
-                        break;
-                    }
-                }
-            }
+            let sigmas = self.sign2_round(
+                &ctx,
+                &states,
+                sks,
+                mu,
+                &all_coms,
+                &a_coeffs,
+                &mut bin_acc,
+            );
             let r2_total = r2_t0.elapsed();
             timings.sign_bin += bin_acc;
             timings.sign2_rest += r2_total.saturating_sub(bin_acc);
-            if restart {
-                continue;
-            }
+            let sigmas = match sigmas {
+                Some(s) => s,
+                None => continue,
+            };
 
             let agg_t0 = Instant::now();
             let sig = self.sagg(&sigmas).ok_or("sagg failed")?;
@@ -1576,13 +1641,14 @@ impl LoTRS {
 
 /// Per-signer carry-state between sign1 and sign2.  All pp / μ / PK
 /// derived values live on [`SigningContext`] and are passed
-/// alongside this struct.
+/// alongside this struct.  `sk_u` is *not* stored here — sign2
+/// re-borrows `sks[row_u]` from the caller — and `rho` is inlined
+/// as a fixed-size array to avoid a per-signer heap allocation.
 struct Sign1State {
     ell: usize,
-    sk_u: Vec<Poly>,
     y_list: Vec<PolyVec>,
     r_list: Vec<PolyVec>,
-    rho: Vec<u8>,
+    rho: [u8; 32],
     attempt: u32,
     row_u: usize,
 }
@@ -1614,6 +1680,7 @@ struct Sign2Transcript {
 // Polynomial equality including inner-vector equality.
 fn proofs_equal(a: &_Proof, b: &_Proof) -> bool {
     a.x == b.x
+        && a.x_seed == b.x_seed
         && a.b_bin_hi == b.b_bin_hi
         && a.w_tilde_hi == b.w_tilde_hi
         && a.f1 == b.f1

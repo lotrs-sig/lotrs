@@ -53,7 +53,7 @@ Implementation notes for this artifact:
 | secret key | `list[list[int]]` | l+k ring elements (short) |
 | public key | `list[list[int]]` | k ring elements (t = A_bar * s) |
 | signature | `dict` | keys: `pi`, `z_tilde`, `r_tilde`, `e_tilde` |
-| proof transcript pi | `dict` | keys: `B_bin_hi`, `w_tilde_hi`, `x`, `f1`, `z_b` |
+| proof transcript pi | `dict` | keys: `B_bin_hi`, `w_tilde_hi`, `x_seed`, `x`, `f1`, `z_b` |
 
 ### Two rings
 
@@ -430,12 +430,12 @@ par.check_security()   # adds: range-proof condition, challenge-difference
 
 #### Concrete parameter sets
 
-All three d=128 sets share the same lattice: `k=12, l=5, l'=6, n̂=10, k̂=8`, `q = 274877906837` (largest prime ≤ 2^38 with `q ≡ 5 mod 8`), `q_hat = 8589934237` (largest prime ≤ 2^33), `K_A=20, K_B=5, K_w=5`, `phi_a=50, phi_b=4`.  Only `T`, `phi`, and `beta` vary.  All are tracked against `estimator/lotrs_estimate.py`.
+All three d=128 sets share the same lattice: `k=12, l=5, l'=6, n̂=11, k̂=8`, `q = q_hat = 274877906837` (largest prime < 2^38 with `q ≡ 5 mod 8`), `K_A=28, K_B=5, K_w=5`, `phi_a=24, phi_b=4`.  Only `T`, `phi`, and `beta` vary.  All are tracked against `estimator/lotrs_estimate.py`.  Expected-attempt figures below are the estimator heuristic μ_total — empirical means in the Rust bench run ~6, about 2× the heuristic, because of the additional `w̃₀`-stability restart.
 
 - `TEST_PARAMS` — small test set (d=32, N=4, T=2, q=4194389, q_hat=7000061). Fast, not secure. Uses distinct q/q_hat to exercise both rings. NTT path is disabled at d=32; schoolbook is used. `mask_sampler = "cdt"`.
-- `BENCH_4OF32` — 4-of-32 benchmark variant (d=128, β=32, T=4, `phi = 47 = 11.75·T`). `mask_sampler = "facct"` (σ₀ ≈ 2.1 × 10⁶).  Probes the small-T regime at N=32.
-- `BENCH_PARAMS` — 16-of-32 benchmark set (d=128, β=32, T=16, `phi = 188 = 11.75·T`).  Signature ~23 KiB, ~12.3 expected attempts.
-- `PRODUCTION_PARAMS` — 50-of-100 set (d=128, β=100, T=50, `phi = 587.5 = 11.75·T`).  Signature ~35 KiB, ~12.3 expected attempts. Matches `estimator/LoTRS-Estimate-Output-N100T50.txt`.
+- `BENCH_4OF32` — 4-of-32 benchmark variant (d=128, β=32, T=4, `phi = 88 = 22·T`). `mask_sampler = "facct"` (σ₀ ≈ 3.9 × 10⁶).  Probes the small-T regime at N=32.
+- `BENCH_PARAMS` — 16-of-32 benchmark set (d=128, β=32, T=16, `phi = 352 = 22·T`).  Signature ~25 KiB, ~3.0 expected attempts (heuristic).
+- `PRODUCTION_PARAMS` — 50-of-100 set (d=128, β=100, T=50, `phi = 1100 = 22·T`).  Signature ~36 KiB, ~3.0 expected attempts (heuristic). Matches `estimator/LoTRS-Estimate-Output-N100T50.txt`.
 
 ---
 
@@ -613,10 +613,9 @@ optimal_rice_k(sigma) -> int
 Optimal Rice parameter: `floor(log2(1.1774 * sigma))`.
 
 ```python
-_pack_challenge(poly, w, d) -> bytes
-_unpack_challenge(data, w, d) -> (list[int], bytes_consumed)
+_expand_challenge_seed(x_seed, w, d) -> list[int]
 ```
-Challenge encoding: `w` sorted positions (ceil(log2(d)) bits each) + `w` sign bits. Rejects duplicate, non-ascending, or out-of-range positions.
+Expands the λ-bit Fiat-Shamir seed `x_seed` to the sparse signed challenge polynomial via `make_xof(x_seed, b"challenge")` and `xof_sample_challenge`. The polynomial is **never** stored on the wire — only `x_seed` is — so signer and verifier reach the same `x` by running this expansion.
 
 ### `LoTRSCodec(par: LoTRSParams)` class
 
@@ -653,25 +652,25 @@ codec.print_sizes() -> int                # prints breakdown, returns total
 
 **Signature wire format** (all components byte-aligned):
 
-| Field | Count (kappa=1) | Encoding | Bits per coeff |
-|-------|-----------------|----------|---------------|
-| B_bin^(1) | n_hat polys | fixed | log(q_hat) - K_B |
-| w_tilde^(1) | **0 polys** (j >= 1 only) | fixed | log(q) - K_w |
-| x | 1 challenge | challenge | w * (log(d) + 1) |
-| f1 | kappa*(beta-1) polys | Rice | ~log(4.13 * sigma_a) |
-| z_b | (n_hat+k_hat) polys | Rice | ~log(4.13 * sigma_b) |
-| z_tilde | l polys | Rice | ~log(4.13 * sigma_z) |
-| r_tilde | l' polys | Rice | ~log(4.13 * sigma_r) |
-| e_tilde | k polys | Rice | ~log(4.13 * sigma_e) |
+| Field | Count (kappa=1) | Encoding | Width |
+|-------|-----------------|----------|-------|
+| B_bin^(1) | n_hat polys | fixed | log(q_hat) − K_B bits/coeff |
+| w_tilde^(1) | **0 polys** (j ≥ 1 only) | fixed | log(q) − K_w bits/coeff |
+| x_seed | 1 seed | raw | `FS_CHALLENGE_BYTES` = 16 (= λ/8) |
+| f1 | kappa·(beta−1) polys | Rice | ~log(4.13 · sigma_a) bits/coeff |
+| z_b | (n_hat+k_hat) polys | Rice | ~log(4.13 · sigma_b) bits/coeff |
+| z_tilde | l polys | Rice | ~log(4.13 · sigma_z) bits/coeff |
+| r_tilde | l' polys | Rice | ~log(4.13 · sigma_r) bits/coeff |
+| e_tilde | k polys | Rice | ~log(4.13 · sigma_e) bits/coeff |
 
-For kappa = 1, w_tilde^(1) is omitted entirely (0 bytes). The verifier reconstructs w_hat_0^(1) from the verification equation.
+For kappa = 1, w_tilde^(1) is omitted entirely (0 bytes); the verifier reconstructs w̃₀^(1) from the verification equation. The Fiat-Shamir challenge `x` is **not** stored directly — only the λ-bit seed `x_seed` is transmitted, and both signer and verifier derive `x` by feeding `x_seed` through `make_xof(x_seed, b"challenge")` and running `xof_sample_challenge` (SampleInBall-style: rejection-sample `w` distinct positions, then `w` sign bits).
 
 **Deserialization validation (all decoders):**
 - Exact length match (no trailing bytes)
 - All coefficients within declared range
 - Nonzero padding bits rejected
 - Rice unary runs capped at `(bound >> rice_k) + 1`
-- Challenge positions strictly ascending and < d
+- `x_seed` length must equal `FS_CHALLENGE_BYTES`
 
 ---
 

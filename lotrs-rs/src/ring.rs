@@ -212,6 +212,14 @@ impl Ring {
     }
 
     pub fn vec_scale(&self, c_poly: &[u64], v: &[Poly]) -> PolyVec {
+        // Fast path: transform `c_poly` once into the auxiliary NTT
+        // domain and reuse across every element of `v`.  Saves one
+        // forward NTT per element vs the generic `self.mul` path,
+        // which would otherwise re-transform `c_poly` for every i.
+        if let Some(bk) = self.backend.as_ref() {
+            let c_ntt = bk.to_ntt(c_poly);
+            return v.iter().map(|p| bk.mul_with_lhs_ntt(&c_ntt, p)).collect();
+        }
         v.iter().map(|p| self.mul(c_poly, p)).collect()
     }
 
@@ -256,15 +264,32 @@ impl Ring {
 
     /// `acc += c · v` element-wise (ring multiply then add).  Fused helper
     /// used by `kagg` and the `pk_term` loop inside `sign1`.
+    /// `c` is forward-NTT'd once and reused across every element of `v`.
     pub fn vec_add_scaled(&self, acc: &mut [Poly], c: &[u64], v: &[Poly]) {
+        if let Some(bk) = self.backend.as_ref() {
+            let c_ntt = bk.to_ntt(c);
+            for i in 0..v.len() {
+                let prod = bk.mul_with_lhs_ntt(&c_ntt, &v[i]);
+                self.add_assign(&mut acc[i], &prod);
+            }
+            return;
+        }
         for i in 0..v.len() {
             let prod = self.mul(c, &v[i]);
             self.add_assign(&mut acc[i], &prod);
         }
     }
 
-    /// `acc -= c · v` element-wise.
+    /// `acc -= c · v` element-wise.  `c` is forward-NTT'd once.
     pub fn vec_sub_scaled(&self, acc: &mut [Poly], c: &[u64], v: &[Poly]) {
+        if let Some(bk) = self.backend.as_ref() {
+            let c_ntt = bk.to_ntt(c);
+            for i in 0..v.len() {
+                let prod = bk.mul_with_lhs_ntt(&c_ntt, &v[i]);
+                self.sub_assign(&mut acc[i], &prod);
+            }
+            return;
+        }
         for i in 0..v.len() {
             let prod = self.mul(c, &v[i]);
             self.sub_assign(&mut acc[i], &prod);

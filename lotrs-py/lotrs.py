@@ -26,6 +26,9 @@ from sample import (build_cdt, make_xof, derive_subseed,
 from params import LoTRSParams
 
 
+FS_CHALLENGE_BYTES = 16
+
+
 class LoTRS:
     """LoTRS structured threshold ring signature scheme.
 
@@ -373,7 +376,7 @@ class LoTRS:
                         f"SAgg: signer {u} transcript missing key {key!r}")
 
         # -- consistency check on pi (lines 2-6 of SAgg) --
-        pi_required = ("x", "B_bin_hi", "w_tilde_hi", "f1", "z_b")
+        pi_required = ("x_seed", "x", "B_bin_hi", "w_tilde_hi", "f1", "z_b")
         pi0 = sigmas[0]["pi"]
         for key in pi_required:
             if key not in pi0:
@@ -437,7 +440,12 @@ class LoTRS:
         # -- expand G and extract pi fields
         B_bin_hi = pi["B_bin_hi"]
         w_tilde_hi_rest = pi["w_tilde_hi"]   # j >= 1 only (kappa-1 entries)
-        x = pi["x"]
+        x_seed = pi.get("x_seed") if isinstance(pi, dict) else None
+        if not isinstance(x_seed, bytes) or len(x_seed) != FS_CHALLENGE_BYTES:
+            return False
+        x = self._expand_fs_challenge(x_seed)
+        if "x" in pi and pi["x"] != x:
+            return False
         f1 = pi["f1"]
         z_b = pi["z_b"]
 
@@ -578,9 +586,9 @@ class LoTRS:
 
         # -- line 23-24: Fiat-Shamir check with reconstructed w_hat_0^(1)
         w_hi_for_hash = [w_hat_0_hi] + list(w_tilde_hi_rest)
-        x_check = self._hash_fs(
+        c_check = self._hash_fs_seed(
             mu, A_hat_hi, B_bin_hi, w_hi_for_hash, pk_hash)
-        if x_check != x:
+        if c_check != x_seed:
             return False
 
         return True
@@ -728,9 +736,10 @@ class LoTRS:
             h, _ = Rqh.centered_decompose(comp, par.K_A)
             A_bin_hi.append(h)
 
-        # -- line 20: Fiat-Shamir challenge
-        x = self._hash_fs(mu, A_bin_hi, B_bin_hi, w_tilde_hi,
-                                  pk_hash)
+        # -- line 20: Fiat-Shamir challenge seed and expansion
+        x_seed = self._hash_fs_seed(mu, A_bin_hi, B_bin_hi, w_tilde_hi,
+                                     pk_hash)
+        x = self._expand_fs_challenge(x_seed)
 
         # -- line 21: z_b := r_a + x * r_b
         x_hat = Rqh.from_centered(self.Rq.centered(x))
@@ -860,6 +869,7 @@ class LoTRS:
         return dict(
             B_bin_hi=B_bin_hi,
             w_tilde_hi=w_tilde_hi[1:],
+            x_seed=x_seed,
             x=x,
             f1=f1_rq,
             z_b=z_b,
@@ -931,9 +941,9 @@ class LoTRS:
             B.append(row)
         return B
 
-    def _hash_fs(self, mu, A_hi, B_hi, w_hi, pk_hash):
+    def _hash_fs_seed(self, mu, A_hi, B_hi, w_hi, pk_hash):
         """
-        Fiat-Shamir hash -> challenge  x in C.
+        Fiat-Shamir hash -> interim challenge seed x_seed.
 
         H(mu, A_bin^(1), B_bin^(1), w_hat_0^(1), w_tilde_1^(1), ..., H(PK))
 
@@ -954,8 +964,19 @@ class LoTRS:
                 for c in comp:
                     h.update(int(c).to_bytes(8, "little", signed=True))
         h.update(pk_hash)
+        return h.read(FS_CHALLENGE_BYTES)
+
+    def _expand_fs_challenge(self, x_seed):
+        """Expand interim challenge seed x_seed to sparse ternary x."""
+        Rq = self.Rq
+        h = make_xof(x_seed, b"challenge")
         raw = xof_sample_challenge(h, self.par.w, self.par.d)
-        return self.Rq.from_centered(raw)
+        return Rq.from_centered(raw)
+
+    def _hash_fs(self, mu, A_hi, B_hi, w_hi, pk_hash):
+        """Compatibility helper: Fiat-Shamir hash expanded directly to x."""
+        return self._expand_fs_challenge(
+            self._hash_fs_seed(mu, A_hi, B_hi, w_hi, pk_hash))
 
     def _pk_hash(self, pk_table):
         """
