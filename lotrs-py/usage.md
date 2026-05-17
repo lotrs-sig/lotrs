@@ -129,7 +129,7 @@ python vectors.py --out vectors.json          # generate from fixed seeds
 python vectors.py --verify vectors.json       # re-derive and compare byte-for-byte
 ```
 
-All randomness derives from deterministic seeds. The `sign()` convenience method handles the restart loop deterministically: attempt `i` derives `rho_i = SHAKE256(signing_seed || "rho" || i)`.
+All randomness derives from deterministic seeds. The `sign()` convenience method handles the restart loop deterministically: attempt `i` derives `rho_i = SHAKE128(signing_seed || "rho" || i)`.
 
 Fixed seeds used by `vectors.py`:
 - pp seed: `00 01 02 ... 1f`

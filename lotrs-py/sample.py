@@ -8,7 +8,7 @@ known-answer-test (KAT) generation.
 
 import math
 from dataclasses import dataclass
-from Crypto.Hash import SHAKE256
+from Crypto.Hash import SHAKE128
 
 try:
     import mpmath
@@ -47,7 +47,6 @@ FACCT_EXP_POLY_Q64 = [
     -152,
     8,
 ]
-SHAKE256_RATE = 136
 SHAKE128_RATE = 168
 DEFAULT_XOF_BATCH_BLOCKS = 4
 
@@ -216,11 +215,11 @@ def build_facct_sampler(sigma, lam=128, tailcut=DEFAULT_GAUSSIAN_TAILCUT):
 
 def make_xof(seed, *tags):
     """
-    Create a SHAKE256 instance with domain-separated seed.
+    Create a SHAKE128 instance with domain-separated seed.
 
     Tags may be  bytes | str | int.  Ints are encoded as 4-byte LE.
     """
-    h = SHAKE256.new(seed)
+    h = SHAKE128.new(seed)
     for tag in tags:
         if isinstance(tag, int):
             h.update(tag.to_bytes(4, "little"))
@@ -230,7 +229,7 @@ def make_xof(seed, *tags):
             h.update(tag)
         else:
             raise TypeError(f"unsupported tag type {type(tag)}")
-    return BufferedXOF(h, SHAKE256_RATE)
+    return BufferedXOF(h, SHAKE128_RATE)
 
 
 def derive_subseed(seed, *tags, outlen=32):

@@ -3,7 +3,7 @@ test_sample.py -- Unit tests for XOF-based samplers.
 """
 
 import math
-from Crypto.Hash import SHAKE256
+from Crypto.Hash import SHAKE128
 
 from sample import (build_cdt, make_xof,
                     derive_subseed,
@@ -53,7 +53,7 @@ def test_different_seeds_differ():
 
 
 def test_buffered_xof_matches_raw_shake_stream():
-    raw = SHAKE256.new(b"\x11" * 32)
+    raw = SHAKE128.new(b"\x11" * 32)
     raw.update(b"buf")
     xof = make_xof(b"\x11" * 32, b"buf")
     chunks = [1, 7, 8, 31, 2, 64, 5, 96]

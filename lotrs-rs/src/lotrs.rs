@@ -246,21 +246,21 @@ impl LoTRS {
 
     /// 256-bit digest of the canonical PK-table serialization.
     /// Equivalent to `Xof::new(pk_table_bytes(pk_table), [Tag::Bytes(b"pk")]).read_array::<32>()`
-    /// but feeds each coefficient straight into the SHAKE256 absorber so
+    /// but feeds each coefficient straight into the SHAKE128 absorber so
     /// we never materialize the 8-byte-per-coefficient hash preimage
     /// (~58.6 MiB at PRODUCTION scale; distinct from the ~34.8 MiB
     /// fixed-width encoded ring-PK table).
     pub fn pk_table_hash(&self, pk_table: &[Vec<Vec<Poly>>]) -> [u8; 32] {
         use sha3::{
             digest::{ExtendableOutput, Update, XofReader},
-            Shake256,
+            Shake128,
         };
 
         // Buffered chunked absorb: filling a 4 KiB scratch and feeding it
         // in one `update` call is materially faster than 8 bytes at a
         // time because each `update` walks the SHAKE state machine.
         const CHUNK: usize = 4096;
-        let mut h = Shake256::default();
+        let mut h = Shake128::default();
         let mut scratch = [0u8; CHUNK];
         let mut pos = 0usize;
 
@@ -338,10 +338,10 @@ impl LoTRS {
     ) -> [u8; FS_CHALLENGE_BYTES] {
         use sha3::{
             digest::{ExtendableOutput, Update, XofReader},
-            Shake256,
+            Shake128,
         };
 
-        let mut h = Shake256::default();
+        let mut h = Shake128::default();
         // make_xof(b"", b"FS")
         h.update(b"FS");
         h.update(mu);

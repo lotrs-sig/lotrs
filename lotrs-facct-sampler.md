@@ -44,7 +44,7 @@ CDT sampler in the repo.
 
 ## 2. Randomness Source
 
-All randomness is drawn from a caller-supplied SHAKE-256 XOF.
+All randomness is drawn from a caller-supplied SHAKE-128 XOF.
 
 - integers are decoded little-endian
 - rejection consumes fresh XOF output

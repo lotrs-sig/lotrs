@@ -155,12 +155,12 @@ serialization compatible with the Python reference; a CRT-NTT ring
 backend with pseudo-Mersenne reduction; CDT and FACCT-style
 samplers; the Python/Rust interop tests; and the bench harness.
 
-Both implementations precompute a 256-bit SHAKE-256 digest of the
+Both implementations precompute a 256-bit SHAKE-128 digest of the
 canonical PK-table serialization once per signing or verification
 call and feed *that* digest into `H_agg`, `H_com`, and the
 Fiat-Shamir hash, instead of re-hashing the multi-MiB ring
 public-key table at every call site.  Binding to the full PK is
-preserved by SHAKE-256 collision-resistance.
+preserved by SHAKE-128 collision-resistance.
 
 The artifact does **not** claim a constant-time signing
 implementation.  The Rust arithmetic hot paths have received a first
@@ -182,7 +182,7 @@ the bundled external estimator components.
 Specification of the FACCT-style integer Gaussian sampler used for
 the large masking distributions (`sigma_0`, `sigma_0_prime`) in the
 benchmark and production parameter sets.  Covers the truncated
-target distribution, the SHAKE-256/XOF-driven randomness, the
+target distribution, the SHAKE-128/XOF-driven randomness, the
 uniform proposal, the fixed-point Bernoulli-exp acceptance test,
 the explicit parameter-set sampler selection used by the
 implementations, and the validation requirements that the Python/Rust

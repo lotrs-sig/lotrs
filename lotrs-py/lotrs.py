@@ -4,7 +4,7 @@ lotrs.py -- LoTRS: Practical Post-Quantum Threshold Ring Signatures
 
 Reference implementation of the scheme described in Figs. 4-6 of the
 LoTRS paper.  Every source of randomness is derived deterministically
-from caller-supplied seeds via SHAKE-256, enabling known-answer testing.
+from caller-supplied seeds via SHAKE-128, enabling known-answer testing.
 
 Notation
 --------

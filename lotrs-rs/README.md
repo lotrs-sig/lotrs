@@ -69,7 +69,7 @@ src/
   aux_ntt.rs     Exact negacyclic multiplication via CRT over two
                  48-bit auxiliary primes  (mirrors ../lotrs-py/aux_ntt.py).
   ring.rs        Polynomial ring R_q = Z_q[X]/(X^d + 1).
-  sample.rs      SHAKE256 XOF + uniform / short / ternary / challenge /
+  sample.rs      SHAKE128 XOF + uniform / short / ternary / challenge /
                  Gaussian samplers (matches ../lotrs-py/sample.py),
                  plus FACCT-style large-sigma sampler.
   codec.rs       Canonical serialization of pp / sk / pk / signature.
@@ -378,14 +378,14 @@ plots: [`sign-vs-T.pdf`](bench-out/sign-vs-T.pdf),
 
 |   N |  T | Sign       | Verify   | KAgg     |  signature  | single pk |  ring PK   |
 |  -: | -: | -:         | -:       | -:       |   -:        |   -:      |    -:      |
-|  32 |  4 |  139.3 ms  |  26.8 ms |   9.2 ms |  23.90 KiB  | 7.12 KiB  | 0.89 MiB   |
-|  32 |  8 |  173.5 ms  |  33.0 ms |  15.4 ms |  24.36 KiB  | 7.12 KiB  | 1.78 MiB   |
-|  32 | 16 |  219.2 ms  |  45.2 ms |  26.7 ms |  24.99 KiB  | 7.12 KiB  | 3.56 MiB   |
-|  32 | 32 |  292.7 ms  |  72.0 ms |  55.4 ms |  25.41 KiB  | 7.12 KiB  | 7.12 MiB   |
-| 100 |  5 |  423.7 ms  |  64.3 ms |  23.4 ms |  34.01 KiB  | 7.12 KiB  | 3.48 MiB   |
-| 100 | 10 |  475.9 ms  |  87.7 ms |  45.1 ms |  34.64 KiB  | 7.12 KiB  | 6.96 MiB   |
-| 100 | 25 |  616.3 ms  | 156.9 ms | 100.9 ms |  35.35 KiB  | 7.12 KiB  | 17.40 MiB  |
-| 100 | 50 | **887.2 ms** | **272.0 ms** | **210.3 ms** | **35.79 KiB** | 7.12 KiB | 34.79 MiB |
+|  32 |  4 |  119.6 ms  |  25.5 ms |   9.8 ms |  23.89 KiB  | 7.12 KiB  | 0.89 MiB   |
+|  32 |  8 |  142.7 ms  |  31.0 ms |  16.2 ms |  24.34 KiB  | 7.12 KiB  | 1.78 MiB   |
+|  32 | 16 |  149.1 ms  |  43.2 ms |  31.6 ms |  24.98 KiB  | 7.12 KiB  | 3.56 MiB   |
+|  32 | 32 |  282.2 ms  |  66.0 ms |  51.6 ms |  25.42 KiB  | 7.12 KiB  | 7.12 MiB   |
+| 100 |  5 |  417.2 ms  |  60.1 ms |  22.9 ms |  34.01 KiB  | 7.12 KiB  | 3.48 MiB   |
+| 100 | 10 |  441.8 ms  |  81.4 ms |  43.0 ms |  34.64 KiB  | 7.12 KiB  | 6.96 MiB   |
+| 100 | 25 |  567.4 ms  | 145.2 ms | 103.2 ms |  35.36 KiB  | 7.12 KiB  | 17.40 MiB  |
+| 100 | 50 | **788.5 ms** | **250.0 ms** | **198.3 ms** | **35.79 KiB** | 7.12 KiB | 34.79 MiB |
 
 The `(N, T) = (100, 50)` row is Table 3 of the paper (= the
 `PRODUCTION_PARAMS` preset). The four `(32, *)` rows include the
@@ -395,13 +395,13 @@ hardware listed above.
 
 `KeyGen` sits at ~1.6 ms across every row (independent of `N`, `T`).
 `KAgg` scales as `N·T` (deterministic, single-run): 5000 pk products
-at `(100, 50)` → 210 ms. `pk` is 7.125 KiB in every row; the
+at `(100, 50)` → 198 ms. `pk` is 7.125 KiB in every row; the
 `N·T·pk` ring-PK table scales accordingly. Sign time grows
 near-linearly in `T` at fixed `N` and grows by roughly the `N` ratio
 at fixed `T` (compare `(32, T)` vs `(100, T)` rows).
 
 Implementation note: the structured PK table is pre-hashed once as a
-256-bit SHAKE256 digest before the protocol-specific hash calls. The
+256-bit SHAKE128 digest before the protocol-specific hash calls. The
 digest, not the full table serialization, is then fed to `H_agg`,
 `H_com`, and the Fiat-Shamir hash. This keeps the transcript bound to
 the full PK table while avoiding repeated hashing of the multi-MiB

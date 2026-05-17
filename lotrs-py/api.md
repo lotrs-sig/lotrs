@@ -76,7 +76,7 @@ All polynomial arithmetic is negacyclic in `R_q = Z_q[X] / (X^d + 1)`. Two multi
 Every function that needs randomness takes an explicit seed or XOF handle. No calls to `os.urandom` or `random` during scheme operations. The pattern is:
 
 ```python
-xof = make_xof(seed, tag1, tag2, ...)    # SHAKE-256 with domain separation
+xof = make_xof(seed, tag1, tag2, ...)    # SHAKE-128 with domain separation
 poly = xof_sample_gaussian(xof, cdt, lam, d)
 ```
 
@@ -86,7 +86,7 @@ Tags are bytes, strings (ASCII-encoded), or ints (4-byte little-endian).
 
 ## `sample.py` — XOF-based polynomial samplers
 
-Standalone deterministic samplers. Each takes an explicit SHAKE-256 XOF handle so the caller controls domain separation and seed derivation.
+Standalone deterministic samplers. Each takes an explicit SHAKE-128 XOF handle so the caller controls domain separation and seed derivation.
 
 ### CDT construction
 
@@ -98,9 +98,9 @@ Builds a cumulative distribution table for `|D_sigma|`. `cdt[k] = floor(Pr[|X| <
 ### XOF helpers
 
 ```python
-make_xof(seed: bytes, *tags) -> SHAKE256
+make_xof(seed: bytes, *tags) -> SHAKE128
 ```
-Creates a SHAKE-256 instance with domain-separated seed. Tags may be `bytes`, `str` (ASCII-encoded), or `int` (4-byte LE). Used everywhere for deterministic randomness derivation.
+Creates a SHAKE-128 instance with domain-separated seed. Tags may be `bytes`, `str` (ASCII-encoded), or `int` (4-byte LE). Used everywhere for deterministic randomness derivation.
 
 ### Prepared Gaussian samplers
 
@@ -462,7 +462,7 @@ scheme.keygen(pp: bytes, seed: bytes) -> tuple[list, list]
 ```python
 scheme.kagg(pk_table) -> list
 ```
-`KAgg(PK)`. Returns `N` aggregated column keys. The implementation first computes a 256-bit SHAKE256 digest of the canonical PK-table serialization with domain tag `pk`, then uses `alpha_u = H_agg(pk_hash, u)` so the full PK table is hashed once rather than once per row.
+`KAgg(PK)`. Returns `N` aggregated column keys. The implementation first computes a 256-bit SHAKE128 digest of the canonical PK-table serialization with domain tag `pk`, then uses `alpha_u = H_agg(pk_hash, u)` so the full PK table is hashed once rather than once per row.
 
 ```python
 scheme.sign1(pp, sk_u, row_u, ell, mu, pk_table, rho, attempt)
@@ -508,7 +508,7 @@ The w̃₀^(1) is NOT in the signature — the verifier reconstructs it.
 ```python
 scheme.sign(pp, sks, ell, mu, pk_table, signing_seed) -> dict
 ```
-Runs the full two-round ceremony with automatic restart loop. For attempt `i`, derives `rho = SHAKE256(signing_seed || "rho" || i)`. Raises `RuntimeError` after `max_attempts`.
+Runs the full two-round ceremony with automatic restart loop. For attempt `i`, derives `rho = SHAKE128(signing_seed || "rho" || i)`. Raises `RuntimeError` after `max_attempts`.
 
 ### Internal methods
 
@@ -516,15 +516,15 @@ Runs the full two-round ceremony with automatic restart loop. For attempt `i`, d
 
 | Method | Description |
 |--------|-------------|
-| `_expand_A(pp)` | `A in R_q^{k x l}` from `SHAKE256(pp \|\| "A" \|\| i \|\| j)` |
-| `_expand_G(pp)` | `G in R_{q_hat}^{n_hat x G_cols}` from `SHAKE256(pp \|\| "G" \|\| i \|\| j)` |
+| `_expand_A(pp)` | `A in R_q^{k x l}` from `SHAKE128(pp \|\| "A" \|\| i \|\| j)` |
+| `_expand_G(pp)` | `G in R_{q_hat}^{n_hat x G_cols}` from `SHAKE128(pp \|\| "G" \|\| i \|\| j)` |
 | `_augment_I(M, k)` | `[M \| I_k]` — append identity block |
 
 #### Hash functions
 
 | Method | Description |
 |--------|-------------|
-| `_pk_hash(pk_table)` | 256-bit SHAKE256 digest of the canonical PK-table serialization, domain-separated with tag `pk`. |
+| `_pk_hash(pk_table)` | 256-bit SHAKE128 digest of the canonical PK-table serialization, domain-separated with tag `pk`. |
 | `_hash_agg(pk_hash, u)` | `H_agg(H(PK), u)` — per-row aggregation coefficient in C. Returns canonical `[0, q)` form. |
 | `_hash_com(pk_hash, mu)` | `H_com(H(PK), mu)` — commitment matrix B in R_q^{k x l'}. |
 | `_hash_fs(mu, A_hi, B_hi, w_hi, pk_hash)` | Fiat-Shamir hashing with the 32-byte PK digest. Uses **8-byte signed LE** per coefficient for decomposed values and appends the digest. Returns canonical form. |

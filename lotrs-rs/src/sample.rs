@@ -1,6 +1,6 @@
 //! XOF-based samplers — port of `lotrs-py/sample.py`.
 //!
-//! Every sampler here reads bytes from a caller-supplied SHAKE256 XOF.
+//! Every sampler here reads bytes from a caller-supplied SHAKE128 XOF.
 //! Output is fully deterministic from the XOF seed.  This matches the
 //! Python reference byte-for-byte, so the same `(seed, tag…)` pair
 //! yields the same polynomial in Rust and Python.
@@ -27,18 +27,18 @@
 
 use sha3::{
     digest::{ExtendableOutput, Update, XofReader},
-    Shake256,
+    Shake128,
 };
 
-const SHAKE256_RATE: usize = 136;
+const SHAKE128_RATE: usize = 168;
 const XOF_BATCH_BLOCKS: usize = 4;
-const XOF_BATCH_BYTES: usize = SHAKE256_RATE * XOF_BATCH_BLOCKS;
+const XOF_BATCH_BYTES: usize = SHAKE128_RATE * XOF_BATCH_BLOCKS;
 
-/// SHAKE256 XOF with an indefinite output stream.  Wraps `sha3::Shake256`
+/// SHAKE128 XOF with an indefinite output stream.  Wraps `sha3::Shake128`
 /// together with a lazily-initialized reader so callers can interleave
 /// `read(n)` calls after initial absorbing.
 pub struct Xof {
-    reader: <Shake256 as ExtendableOutput>::Reader,
+    reader: <Shake128 as ExtendableOutput>::Reader,
     buf: [u8; XOF_BATCH_BYTES],
     pos: usize,
     len: usize,
@@ -55,10 +55,10 @@ pub enum Tag<'a> {
 }
 
 impl Xof {
-    /// Create a SHAKE256 XOF by absorbing `seed` followed by each `tag`,
+    /// Create a SHAKE128 XOF by absorbing `seed` followed by each `tag`,
     /// matching `lotrs-py/sample.py::make_xof(seed, *tags)`.
     pub fn new(seed: &[u8], tags: &[Tag<'_>]) -> Self {
-        let mut h = Shake256::default();
+        let mut h = Shake128::default();
         h.update(seed);
         for tag in tags {
             match *tag {
