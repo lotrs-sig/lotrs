@@ -45,7 +45,7 @@ implementation reproduces byte-for-byte.
 The fastest end-to-end smoke test:
 
 ```bash
-# 1. Python reference: run all 137 unit / e2e tests + verify shipped test vectors.
+# 1. Python reference: run all 134 unit / e2e tests + verify shipped test vectors.
 cd lotrs-py
 pip install -r requirements.txt              # numpy, pycryptodome, mpmath
 for t in test_ring test_sample test_params \
