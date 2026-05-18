@@ -12,7 +12,7 @@ Citation:
 
 ```bibtex
 @misc{cryptoeprint:2026/974,
-      author = {Nikai Jagganath and Ron Steinfeld and Muhammed F. Esgin and Amin Sakzad and Dongxi Liu and Markku-Juhani O. Saarinen},
+      author = {Nikai Jagganath and Muhammed F. Esgin and Ron Steinfeld and Amin Sakzad and Markku-Juhani O. Saarinen and Dongxi Liu},
       title = {{LoTRS}: Practical Post-Quantum Structured Threshold Ring Signatures from Lattices},
       howpublished = {Cryptology {ePrint} Archive, Paper 2026/974},
       year = {2026},
