@@ -5,8 +5,8 @@ This repository accompanies the paper:
 > Nikai Jagganath, Ron Steinfeld, Muhammed F. Esgin, Amin Sakzad,
 > Dongxi Liu, and Markku-Juhani O. Saarinen. **LoTRS: Practical
 > Post-Quantum Structured Threshold Ring Signatures from Lattices**.
-> IACR Cryptology ePrint Archive, Report 2026/xxxx, 2026.
-> <https://eprint.iacr.org/2026/xxxx>
+> IACR Cryptology ePrint Archive, Report 2026/974, 2026.
+> <https://eprint.iacr.org/2026/974>
 
 Citation:
 
@@ -16,7 +16,7 @@ Citation:
   title        = {{LoTRS}: Practical Post-Quantum Structured Threshold Ring Signatures from Lattices},
   howpublished = {IACR Cryptology ePrint Archive, Report 2026/xxxx},
   year         = {2026},
-  url          = {https://eprint.iacr.org/2026/xxxx}
+  url          = {https://eprint.iacr.org/2026/974}
 }
 ```
 
