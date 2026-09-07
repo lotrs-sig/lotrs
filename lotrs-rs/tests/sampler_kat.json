@@ -686,8 +686,7 @@
         -48,
         -27,
         31
-      ],
-      "cdt_name": "CDT_SIGMA_A_TEST"
+      ]
     },
     {
       "name": "cdt_test_sigma_b",
@@ -763,8 +762,7 @@
         -135,
         -678,
         183
-      ],
-      "cdt_name": "CDT_SIGMA_B_TEST"
+      ]
     },
     {
       "name": "cdt_bench_4of32_sigma_a",
@@ -840,8 +838,7 @@
         -58,
         -130,
         -146
-      ],
-      "cdt_name": "CDT_SIGMA_A_BENCH_4OF32"
+      ]
     },
     {
       "name": "cdt_bench_sigma_a",
@@ -917,8 +914,7 @@
         -308,
         193,
         -147
-      ],
-      "cdt_name": "CDT_SIGMA_A_BENCH"
+      ]
     },
     {
       "name": "cdt_bench_sigma_b",
@@ -994,8 +990,7 @@
         -23337,
         -8587,
         -17519
-      ],
-      "cdt_name": "CDT_SIGMA_B_BENCH_PRODUCTION"
+      ]
     },
     {
       "name": "cdt_production_sigma_a",
@@ -1071,8 +1066,7 @@
         24,
         -11,
         22
-      ],
-      "cdt_name": "CDT_SIGMA_A_PRODUCTION"
+      ]
     }
   ]
 }

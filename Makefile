@@ -15,5 +15,7 @@ check-full: check
 
 clean:
 	cd lotrs-rs && cargo clean
+	$(RM) -rf lotrs-rs/scripts/__pycache__
+	$(RM) -f lotrs-rs/scripts/*.pyc lotrs-rs/scripts/*.pyo
 	cd lotrs-py && $(MAKE) clean
 	cd estimator && $(MAKE) clean

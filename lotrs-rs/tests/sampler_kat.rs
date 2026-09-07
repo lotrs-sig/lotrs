@@ -32,12 +32,6 @@ struct Entry {
     seed: String,
     tags: Vec<String>,
     samples: Vec<i64>,
-    /// Optional: names a shipped `cdt::CDT_*` constant.  Present on
-    /// CDT KAT entries whose table we ship; absent on informational
-    /// CDT entries (e.g. on-the-fly small-sigma tables Rust can't
-    /// rebuild).
-    #[serde(default)]
-    cdt_name: Option<String>,
 }
 
 fn kat_path() -> Option<PathBuf> {
@@ -86,25 +80,9 @@ fn cross_language_sampler_kat_matches_python() {
                 xof_sample_gaussian_facct(&mut xof, &p, entry.d)
             }
             "cdt" => {
-                // Resolve the shipped CDT by `cdt_name` so every CDT
-                // fixture is directly cross-language pinned.  Entries
-                // without a `cdt_name` are informational (no shipped
-                // table) and are skipped with a notice.
-                let table_name = match &entry.cdt_name {
-                    Some(n) => n.as_str(),
-                    None => {
-                        eprintln!("skipping CDT KAT {:?} (no cdt_name)", entry.name);
-                        continue;
-                    }
-                };
-                let cdt = match lookup_cdt_by_name(table_name) {
-                    Some(t) => t,
-                    None => panic!(
-                        "KAT {:?} references unknown cdt_name {:?}",
-                        entry.name, table_name
-                    ),
-                };
-                xof_sample_gaussian(&mut xof, cdt, 128, entry.d)
+                let cdt = lotrs::cdt::build_cdt_cached(entry.sigma, 128)
+                    .expect("KAT sigma must be finite and positive");
+                xof_sample_gaussian(&mut xof, &cdt, 128, entry.d)
             }
             other => panic!("unknown backend {other:?} in KAT"),
         };
@@ -113,23 +91,5 @@ fn cross_language_sampler_kat_matches_python() {
             "KAT {:?} diverged between Rust and Python",
             entry.name
         );
-    }
-}
-
-/// Resolve a shipped `cdt::CDT_*` constant by its unqualified name.
-/// Every entry in `tests/sampler_kat.json` with a `cdt_name` must
-/// match one of the arms below.
-fn lookup_cdt_by_name(name: &str) -> Option<&'static [u128]> {
-    use lotrs::cdt;
-    match name {
-        "CDT_SIGMA_0_TEST" => Some(cdt::CDT_SIGMA_0_TEST),
-        "CDT_SIGMA_0_PRIME_TEST" => Some(cdt::CDT_SIGMA_0_PRIME_TEST),
-        "CDT_SIGMA_A_TEST" => Some(cdt::CDT_SIGMA_A_TEST),
-        "CDT_SIGMA_B_TEST" => Some(cdt::CDT_SIGMA_B_TEST),
-        "CDT_SIGMA_A_BENCH_4OF32" => Some(cdt::CDT_SIGMA_A_BENCH_4OF32),
-        "CDT_SIGMA_A_BENCH" => Some(cdt::CDT_SIGMA_A_BENCH),
-        "CDT_SIGMA_A_PRODUCTION" => Some(cdt::CDT_SIGMA_A_PRODUCTION),
-        "CDT_SIGMA_B_BENCH_PRODUCTION" => Some(cdt::CDT_SIGMA_B_BENCH_PRODUCTION),
-        _ => None,
     }
 }

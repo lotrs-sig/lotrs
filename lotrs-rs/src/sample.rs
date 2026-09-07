@@ -6,10 +6,9 @@
 //! yields the same polynomial in Rust and Python.
 //!
 //! **Gaussian sampling — two backends.**  CDT tables are built from
-//! mpmath high-precision CDFs in the Python reference.  Rust does not
-//! ship a high-precision library by default, so we consume CDTs as
-//! precomputed `&[u128]` slices provided by the caller (see
-//! [`crate::cdt`]).  The CDT sampling algorithm (binary search +
+//! mpmath high-precision CDFs in the Python reference and matching
+//! 640-bit fixed-point arithmetic in Rust (see [`crate::cdt`]). The
+//! CDT sampling algorithm (binary search +
 //! separate sign byte) in [`xof_sample_gaussian`] is identical to
 //! `xof_sample_gaussian` in Python.
 //!
@@ -681,22 +680,6 @@ mod tests {
         let t = xof_sample_ternary(&mut x, 64);
         for c in t {
             assert!(c.abs() <= 1);
-        }
-    }
-
-    #[test]
-    fn gaussian_uses_bundled_cdt() {
-        // Smoke test: the Gaussian sampler accepts the CDT from crate::cdt
-        // and produces reasonable-looking samples.  Full byte-for-byte
-        // interop against Python is covered in tests/interop.rs.
-        use crate::cdt::CDT_SIGMA_A_TEST;
-        let mut x = Xof::new(&[5u8; 32], &[Tag::Bytes(b"gauss")]);
-        let g = xof_sample_gaussian(&mut x, CDT_SIGMA_A_TEST, 128, 32);
-        // 14 * sigma_a is the nominal tail — absolutely bounded by the
-        // CDT size, so generated magnitudes cannot exceed it.
-        let bound = CDT_SIGMA_A_TEST.len() as i64;
-        for c in g {
-            assert!(c.abs() < bound);
         }
     }
 

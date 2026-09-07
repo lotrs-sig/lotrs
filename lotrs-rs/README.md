@@ -29,7 +29,7 @@ in [`../lotrs-py`](../lotrs-py/).
   than panicking or surfacing error details that might leak signer state.
 - **Fail-closed on unsupported parameter sets.** `LoTRS::try_new`
   refuses any parameter set it can't serve — currently `kappa != 1`
-  or a sigma whose matching small-sigma CDT isn't shipped.
+  or a named profile whose derived Gaussian widths do not match.
 
 ## Paper alignment
 
@@ -73,9 +73,7 @@ src/
                  Gaussian samplers (matches ../lotrs-py/sample.py),
                  plus FACCT-style large-sigma sampler.
   codec.rs       Canonical serialization of pp / sk / pk / signature.
-  cdt.rs         Precomputed CDT tables for every small-sigma width
-                 used across TEST / BENCH_4OF32 / BENCH / PRODUCTION.  Ported from
-                 ../lotrs-py via scripts/gen_cdt.py.
+  cdt.rs         Exact 128-bit CDT construction and process-wide cache.
   lotrs.rs       Scheme implementation: Setup / KeyGen / Sign / Verify.
 tests/
   interop.rs     Loads ../lotrs-py/vectors.json and checks byte-exact
@@ -84,7 +82,6 @@ tests/
   sampler_kat.rs Cross-language Gaussian-sampler KAT vs
                  tests/sampler_kat.json (emitted by the Python side).
 scripts/
-  gen_cdt.py         Regenerates src/cdt.rs from the Python reference.
   gen_sampler_kat.py Regenerates tests/sampler_kat.json.
 ```
 
@@ -160,12 +157,12 @@ signer remains a future pass.
 Two backends, matching the Python reference one-for-one:
 
 * **CDT** (`xof_sample_gaussian`) — used for every width where the
-  table fits in memory.  `src/cdt.rs` ships the eight CDTs needed by
-  the four supported parameter sets: the four TEST widths
+  table fits in memory. `src/cdt.rs` constructs each required table
+  once during `LoTRS::try_new` and caches it for later contexts. The
+  required widths are the four TEST widths
   (`sigma_0`, `sigma_0_prime`, `sigma_a`, `sigma_b`) plus
   `sigma_a` at `BENCH_4OF32` / `BENCH_PARAMS` / `PRODUCTION_PARAMS`
-  and a single shared `sigma_b` for all three 4of32 / 16of32 / 50of100
-  sets (they use the same `phi_b` and `B_b`).
+  and the shared `sigma_b` used by the three larger profiles.
 * **FACCT-style** (`xof_sample_gaussian_facct` +
   `prepare_facct`) — used for the two mask widths `sigma_0`,
   `sigma_0_prime` at `BENCH_4OF32` / `BENCH_PARAMS` / `PRODUCTION_PARAMS`,
@@ -199,10 +196,9 @@ every entry byte-for-byte.  Covers:
 (see the `#[ignore]`d `bench_and_production_signing_round_trip`
 test; includes construction of the full public-key table).
 
-Regenerate the CDT tables or KAT with
+Regenerate the sampler KAT with
 
 ```bash
-python scripts/gen_cdt.py            > src/cdt.rs
 python scripts/gen_sampler_kat.py    > tests/sampler_kat.json
 ```
 
@@ -214,20 +210,17 @@ python scripts/gen_sampler_kat.py    > tests/sampler_kat.json
 * Decoder refuses truncated, trailing-byte, and tampered signatures.
 * Verifier returns `false` for a wrong message and for a flipped sig bit.
 
-### CDT tables
+### CDT construction
 
 At `TEST_PARAMS` all four Gaussian widths fit in CDT form and are
-shipped as `const` arrays in `src/cdt.rs`.  At `BENCH_4OF32` /
+constructed when the scheme context is initialized. At `BENCH_4OF32` /
 `BENCH_PARAMS` / `PRODUCTION_PARAMS`, only the small binary-proof
 widths `sigma_a` / `sigma_b` stay on CDT; the two large mask widths
 `sigma_0` / `sigma_0_prime` use the FACCT-style sampler described
-above.
-
-Regenerate the shipped CDT tables with
-
-```bash
-python scripts/gen_cdt.py > src/cdt.rs
-```
+above. Tables are cached by the exact `(sigma, lam)` pair and shared by
+later contexts in the same process. Constructing the required tables takes
+about 0.3 seconds in a release build on the reference machine. Context
+construction occurs outside the benchmark timing loops.
 
 ## Build
 

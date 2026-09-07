@@ -13,13 +13,16 @@
 //! [`LoTRSParams`] — there is no runtime threshold dispatch.
 
 use std::collections::HashSet;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use rayon::prelude::*;
 
 use crate::cdt;
 use crate::codec::{LoTRSCodec, Proof as _Proof, Signature, FS_CHALLENGE_BYTES};
-use crate::params::{LoTRSParams, MaskSamplerKind};
+use crate::params::{
+    LoTRSParams, MaskSamplerKind, BENCH_4OF32, BENCH_PARAMS, PRODUCTION_PARAMS, TEST_PARAMS,
+};
 use crate::ring::{NttPolyMat, Poly, PolyMat, PolyVec, Ring};
 use crate::sample::{
     prepare_facct, rej, xof_sample_challenge, xof_sample_gaussian, xof_sample_gaussian_facct,
@@ -79,7 +82,7 @@ pub struct VerifyTimings {
 /// multi-GB tables, so we use the FACCT-style integer pipeline.
 #[derive(Clone)]
 enum MaskSampler {
-    Cdt(&'static [u128]),
+    Cdt(Arc<[u128]>),
     Facct(FacctParams),
 }
 
@@ -92,13 +95,11 @@ pub struct LoTRS {
     pub r_qhat: Ring,
     pub codec: LoTRSCodec,
 
-    // Gaussian samplers resolved at construction time.  sigma_a and
-    // sigma_b are always CDT — they're small for every parameter set
-    // we support.  sigma_0 and sigma_0_prime dispatch per-parameter-set
-    // via `MaskSampler` because the CDT is infeasible for the large-
-    // sigma mask widths at BENCH / PRODUCTION.
-    cdt_sigma_a: &'static [u128],
-    cdt_sigma_b: &'static [u128],
+    // Gaussian samplers resolved at construction time. sigma_a and
+    // sigma_b use CDTs built and cached during construction. sigma_0
+    // and sigma_0_prime dispatch per parameter set via MaskSampler.
+    cdt_sigma_a: Arc<[u128]>,
+    cdt_sigma_b: Arc<[u128]>,
     sampler_0: MaskSampler,
     sampler_0_prime: MaskSampler,
 }
@@ -115,7 +116,7 @@ impl LoTRS {
     /// that this implementation does not support:
     ///
     /// * `par.kappa != 1`
-    /// * no shipped CDT table matches `par.sigma_a` or `par.sigma_b`
+    /// * the named profile's derived Gaussian widths do not match
     ///
     /// Callers building a panic-free verifier must use this rather
     /// than [`LoTRS::new`].
@@ -123,10 +124,8 @@ impl LoTRS {
         if par.kappa != 1 {
             return None;
         }
-        // sigma_a / sigma_b are always CDT.  CDTs are resolved by
-        // (parameter-set name, width) — no length-only lookup, which
-        // could pick a table built for a different distribution that
-        // happened to share the same truncation length.
+        // sigma_a / sigma_b are always CDT. Each table is built once
+        // for its exact width and then shared by the process-wide cache.
         let cdt_sigma_a = resolve_cdt(&par, CdtWidth::SigmaA)?;
         let cdt_sigma_b = resolve_cdt(&par, CdtWidth::SigmaB)?;
 
@@ -863,7 +862,7 @@ impl LoTRS {
                         Tag::Int(attempt),
                     ],
                 );
-                row[i] = xof_sample_gaussian(&mut x, self.cdt_sigma_a, par.lam, par.d);
+                row[i] = xof_sample_gaussian(&mut x, &self.cdt_sigma_a, par.lam, par.d);
             }
             // a_{j, 0} = -sum_{i >= 1} a_{j, i}
             let mut a_j0 = vec![0i64; par.d];
@@ -1226,7 +1225,7 @@ impl LoTRS {
         let mut xof_ra = Xof::new(rho, &[Tag::Bytes(b"ra"), Tag::Int(attempt)]);
         let mut r_a: PolyVec = Vec::with_capacity(par.n_hat + par.k_hat);
         for _ in 0..(par.n_hat + par.k_hat) {
-            let signed = xof_sample_gaussian(&mut xof_ra, self.cdt_sigma_b, par.lam, d);
+            let signed = xof_sample_gaussian(&mut xof_ra, &self.cdt_sigma_b, par.lam, d);
             r_a.push(rqh.from_centered(&signed));
         }
 
@@ -1747,30 +1746,21 @@ enum CdtWidth {
     Sigma0Prime,
 }
 
-/// Resolve the shipped CDT that corresponds to `(par, width)`.  Returns
-/// `None` for any parameter set we don't have a shipped table for —
-/// including custom `LoTRSParams` whose sigmas might coincidentally
-/// share a truncation length with a built-in table.  This replaces the
-/// earlier length-only lookup, which could silently pick the wrong
-/// distribution.
-///
-/// A defensive length sanity check runs on the chosen table so that
-/// any future drift between the Python-generated tables and the
-/// runtime-computed sigmas surfaces as `None` rather than as silently
-/// wrong samples.
-fn resolve_cdt(par: &LoTRSParams, width: CdtWidth) -> Option<&'static [u128]> {
-    let chosen = match (par.name, width) {
-        ("test-32", CdtWidth::SigmaA) => cdt::CDT_SIGMA_A_TEST,
-        ("test-32", CdtWidth::SigmaB) => cdt::CDT_SIGMA_B_TEST,
-        ("test-32", CdtWidth::Sigma0) => cdt::CDT_SIGMA_0_TEST,
-        ("test-32", CdtWidth::Sigma0Prime) => cdt::CDT_SIGMA_0_PRIME_TEST,
-        ("lotrs-bench-4of32", CdtWidth::SigmaA) => cdt::CDT_SIGMA_A_BENCH_4OF32,
-        ("lotrs-bench-4of32", CdtWidth::SigmaB) => cdt::CDT_SIGMA_B_BENCH_PRODUCTION,
-        ("lotrs-bench-16of32", CdtWidth::SigmaA) => cdt::CDT_SIGMA_A_BENCH,
-        ("lotrs-bench-16of32", CdtWidth::SigmaB) => cdt::CDT_SIGMA_B_BENCH_PRODUCTION,
-        ("lotrs-128", CdtWidth::SigmaA) => cdt::CDT_SIGMA_A_PRODUCTION,
-        ("lotrs-128", CdtWidth::SigmaB) => cdt::CDT_SIGMA_B_BENCH_PRODUCTION,
-        // mask widths at BENCH / PRODUCTION use FACCT, so no CDT here.
+/// Build or retrieve the CDT for a supported profile and width.
+/// Exact-width comparison prevents a partially modified named profile
+/// from silently using inconsistent parameters.
+fn resolve_cdt(par: &LoTRSParams, width: CdtWidth) -> Option<Arc<[u128]>> {
+    let expected = match (par.name, width) {
+        ("test-32", CdtWidth::SigmaA) => TEST_PARAMS.sigma_a(),
+        ("test-32", CdtWidth::SigmaB) => TEST_PARAMS.sigma_b(),
+        ("test-32", CdtWidth::Sigma0) => TEST_PARAMS.sigma_0(),
+        ("test-32", CdtWidth::Sigma0Prime) => TEST_PARAMS.sigma_0_prime(),
+        ("lotrs-bench-4of32", CdtWidth::SigmaA) => BENCH_4OF32.sigma_a(),
+        ("lotrs-bench-4of32", CdtWidth::SigmaB) => BENCH_4OF32.sigma_b(),
+        ("lotrs-bench-16of32", CdtWidth::SigmaA) => BENCH_PARAMS.sigma_a(),
+        ("lotrs-bench-16of32", CdtWidth::SigmaB) => BENCH_PARAMS.sigma_b(),
+        ("lotrs-128", CdtWidth::SigmaA) => PRODUCTION_PARAMS.sigma_a(),
+        ("lotrs-128", CdtWidth::SigmaB) => PRODUCTION_PARAMS.sigma_b(),
         _ => return None,
     };
     let sigma = match width {
@@ -1779,12 +1769,10 @@ fn resolve_cdt(par: &LoTRSParams, width: CdtWidth) -> Option<&'static [u128]> {
         CdtWidth::Sigma0 => par.sigma_0(),
         CdtWidth::Sigma0Prime => par.sigma_0_prime(),
     };
-    let expected_len = (14.0 * sigma).ceil() as usize + 1;
-    if chosen.len() == expected_len {
-        Some(chosen)
-    } else {
-        None
+    if sigma.to_bits() != expected.to_bits() {
+        return None;
     }
+    cdt::build_cdt_cached(sigma, par.lam)
 }
 
 /// Build the mask sampler declared on the parameter set.
@@ -1981,10 +1969,7 @@ mod tests {
 
     #[test]
     fn cdt_resolution_rejects_unknown_parameter_name() {
-        // A custom parameter set copies the TEST sigmas but uses a
-        // different name.  We have no shipped CDT for it, so the new
-        // resolver must refuse rather than silently reuse TEST's
-        // tables based on length matching.
+        // A custom parameter set is outside the supported profiles.
         use crate::params::MaskSamplerKind;
         let mut custom = TEST_PARAMS;
         custom.name = "custom-does-not-exist";
@@ -1994,9 +1979,7 @@ mod tests {
 
     #[test]
     fn cdt_resolution_rejects_tampered_sigma() {
-        // If sigma is shifted out from under the table (e.g. via a
-        // parameter tweak that forgot to regenerate the shipped CDT),
-        // resolve_cdt's length sanity check catches the mismatch.
+        // A named profile with inconsistent fields must be rejected.
         let mut tampered = TEST_PARAMS;
         tampered.phi = TEST_PARAMS.phi * 2.0; // doubles sigma_0
         assert!(LoTRS::try_new(tampered).is_none());

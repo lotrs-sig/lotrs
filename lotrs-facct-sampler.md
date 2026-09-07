@@ -177,7 +177,7 @@ The repo uses two Gaussian backends:
 Backend selection for the masking widths is explicit in the parameter
 set, not a hot-path runtime threshold. `LoTRSParams.mask_sampler`
 selects CDT or FACCT for `sigma_0` and `sigma_0_prime`; `sigma_a` and
-`sigma_b` always use shipped CDT tables.
+`sigma_b` use CDTs constructed and cached during initialization.
 
 The current supported parameter sets declare:
 

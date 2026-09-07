@@ -60,11 +60,8 @@ def run_facct(name, sigma, d, seed, tag):
     }
 
 
-def run_cdt(name, sigma, d, seed, tag, cdt_name=None):
-    """Build a CDT sampler for this sigma.  If `cdt_name` is provided
-    it names a `pub static` shipped in the Rust `cdt` module, letting
-    the Rust KAT fetch the exact table instead of inferring one from
-    sigma; otherwise the entry is informational / Python-only."""
+def run_cdt(name, sigma, d, seed, tag):
+    """Build a CDT sampler for this sigma."""
     sampler = build_cdt_sampler(sigma, lam=128)
     xof = make_xof(seed, tag)
     samples = xof_sample_gaussian(xof, sampler.data, sampler.lam, d)
@@ -74,8 +71,6 @@ def run_cdt(name, sigma, d, seed, tag, cdt_name=None):
         "seed": seed.hex(), "tags": [tag.hex()],
         "samples": samples,
     }
-    if cdt_name is not None:
-        entry["cdt_name"] = cdt_name
     return entry
 
 
@@ -90,34 +85,25 @@ def main():
         # FACCT at the BENCH / PRODUCTION sigma_0 regime.
         run_facct("facct_large_bench",    sigma=8.5e6, d=128,
                   seed=b"\xaa" * 32,      tag=b"KAT-facct-bench"),
-        # CDT at small sigma.  The `cdt_name` tells the Rust side
-        # which shipped `pub static` to fetch; without it the CDT
-        # fixtures would only be covered indirectly via the full-
-        # signature interop tests.
+        # CDT widths used by the supported parameter sets.
         run_cdt("cdt_test_sigma_a",
                 sigma=TEST_PARAMS.sigma_a, d=128,
-                seed=b"\x0c" * 32, tag=b"KAT-cdt-test-a",
-                cdt_name="CDT_SIGMA_A_TEST"),
+                seed=b"\x0c" * 32, tag=b"KAT-cdt-test-a"),
         run_cdt("cdt_test_sigma_b",
                 sigma=TEST_PARAMS.sigma_b, d=64,
-                seed=b"\x0d" * 32, tag=b"KAT-cdt-test-b",
-                cdt_name="CDT_SIGMA_B_TEST"),
+                seed=b"\x0d" * 32, tag=b"KAT-cdt-test-b"),
         run_cdt("cdt_bench_4of32_sigma_a",
                 sigma=BENCH_4OF32.sigma_a, d=64,
-                seed=b"\x1a" * 32, tag=b"KAT-cdt-bench-4of32-a",
-                cdt_name="CDT_SIGMA_A_BENCH_4OF32"),
+                seed=b"\x1a" * 32, tag=b"KAT-cdt-bench-4of32-a"),
         run_cdt("cdt_bench_sigma_a",
                 sigma=BENCH_PARAMS.sigma_a, d=64,
-                seed=b"\x0e" * 32, tag=b"KAT-cdt-bench-a",
-                cdt_name="CDT_SIGMA_A_BENCH"),
+                seed=b"\x0e" * 32, tag=b"KAT-cdt-bench-a"),
         run_cdt("cdt_bench_sigma_b",
                 sigma=BENCH_PARAMS.sigma_b, d=64,
-                seed=b"\x0f" * 32, tag=b"KAT-cdt-bench-b",
-                cdt_name="CDT_SIGMA_B_BENCH_PRODUCTION"),
+                seed=b"\x0f" * 32, tag=b"KAT-cdt-bench-b"),
         run_cdt("cdt_production_sigma_a",
                 sigma=PRODUCTION_PARAMS.sigma_a, d=64,
-                seed=b"\x11" * 32, tag=b"KAT-cdt-prod-a",
-                cdt_name="CDT_SIGMA_A_PRODUCTION"),
+                seed=b"\x11" * 32, tag=b"KAT-cdt-prod-a"),
     ]
     json.dump({"kat": vectors}, sys.stdout, indent=2)
     print()
