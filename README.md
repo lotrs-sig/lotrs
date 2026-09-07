@@ -1,21 +1,29 @@
 # LoTRS: Practical Post-Quantum Structured Threshold Ring Signatures from Lattices
 
-This repository accompanies the paper:
+This repository accompanies a paper accepted to ACM CCS 2026.
+A preprint is available from the IACR Cryptology ePrint Archive:
 
 > Nikai Jagganath, Muhammed F. Esgin, Ron Steinfeld, Amin Sakzad,
 > Markku-Juhani O. Saarinen, and Dongxi Liu. **LoTRS: Practical
 > Post-Quantum Structured Threshold Ring Signatures from Lattices**.
-> IACR Cryptology ePrint Archive, Report 2026/974, 2026.
+> In the *Proceedings of the 2026 ACM SIGSAC Conference on Computer and
+> Communications Security (CCS 2026)*. Preprint: IACR Cryptology ePrint
+> Archive, Report 2026/974.
 > <https://eprint.iacr.org/2026/974>
+
+The artifact package includes the [accepted CCS paper](LoTRS.pdf) and its
+[artifact appendix](LoTRS-artifact-appendix.pdf).
 
 Citation:
 
 ```bibtex
-@misc{cryptoeprint:2026/974,
+@inproceedings{jagganath2026lotrs,
       author = {Nikai Jagganath and Muhammed F. Esgin and Ron Steinfeld and Amin Sakzad and Markku-Juhani O. Saarinen and Dongxi Liu},
       title = {{LoTRS}: Practical Post-Quantum Structured Threshold Ring Signatures from Lattices},
-      howpublished = {Cryptology {ePrint} Archive, Paper 2026/974},
+      booktitle = {Proceedings of the 2026 ACM SIGSAC Conference on Computer and Communications Security},
       year = {2026},
+      publisher = {Association for Computing Machinery},
+      note = {Preprint available as Cryptology {ePrint} Archive, Paper 2026/974},
       url = {https://eprint.iacr.org/2026/974}
 }
 ```
@@ -27,6 +35,8 @@ The concrete `kappa=1` instantiation uses the shared production profile in
 
 ```
 README.md                  this file
+LoTRS.pdf                  accepted CCS paper
+LoTRS-artifact-appendix.pdf artifact appendix
 LICENSE                    MIT
 Makefile                   conformance checks and cleanup
 parameters.json            shared production parameter manifest
