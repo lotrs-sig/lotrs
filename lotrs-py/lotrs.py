@@ -22,7 +22,7 @@ from sample import (build_cdt, make_xof, derive_subseed,
                     xof_sample_uniform, xof_sample_gaussian,
                     xof_sample_gaussian_facct,
                     xof_sample_short, xof_sample_challenge,
-                    xof_sample_bounded, rej, rej_op, _flat)
+                    xof_sample_bounded, rej, _flat)
 from params import LoTRSParams
 
 
@@ -144,7 +144,7 @@ class LoTRS:
     # ==================================================================
 
     def sign1(self, pp, sk_u, row_u, ell, mu, pk_table, rho, attempt,
-              pk_hash=None):
+              local_seed, pk_hash=None):
         """
         Sign_1 for signer u.             [Fig. 4, Sign_1]
 
@@ -152,9 +152,15 @@ class LoTRS:
         - state_u  carries all values needed by sign2
         - Com_u = (w_{u,j})_{j in [0, kappa-1]}  -- list of kappa
           vectors of k ring elements
+
+        rho is shared session randomness. local_seed is fresh private
+        randomness belonging only to this signer for this session.
+        Restart counters refresh both streams without changing their seeds.
         """
         par, Rq = self.par, self.Rq
         kappa, d = par.kappa, par.d
+        if not isinstance(local_seed, bytes) or len(local_seed) != 32:
+            raise ValueError("local_seed must be a private 32-byte session seed")
         if pk_hash is None:
             pk_hash = self._pk_hash(pk_table)
 
@@ -181,7 +187,7 @@ class LoTRS:
         # dispatcher helper.
         y_list, r_list = [], []
         for j in range(kappa):
-            xof_y = make_xof(rho, b"y", row_u, j, attempt)
+            xof_y = make_xof(local_seed, b"y", row_u, j, attempt)
             if self.gauss_0.kind == "cdt":
                 y_j = [xof_sample_gaussian(xof_y, self.gauss_0.data,
                                            par.lam, d)
@@ -192,7 +198,7 @@ class LoTRS:
             y_j = [Rq.from_centered(c) for c in y_j]
             y_list.append(y_j)
 
-            xof_r = make_xof(rho, b"r", row_u, j, attempt)
+            xof_r = make_xof(local_seed, b"r", row_u, j, attempt)
             if self.gauss_0p.kind == "cdt":
                 r_j = [xof_sample_gaussian(xof_r, self.gauss_0p.data,
                                            par.lam, d)
@@ -226,6 +232,7 @@ class LoTRS:
             ell=ell, mu=mu, pp=pp, sk_u=sk_u, alpha_u=alpha_u,
             y_list=y_list, r_list=r_list, pk_table=pk_table, rho=rho,
             attempt=attempt, row_u=row_u, pk_hash=pk_hash,
+            local_seed=local_seed,
         )
         return state, coms
 
@@ -323,7 +330,7 @@ class LoTRS:
             shift = Rq.vec_sub(shift, Rq.vec_scale(x_pow[j], y_list[j]))
         shift_signed = [Rq.centered(c) for c in shift]
 
-        xof_rej = make_xof(rho, b"rej_z", row_u, attempt)
+        xof_rej = make_xof(state["local_seed"], b"rej_z", row_u, attempt)
         if not rej(xof_rej,
                    _flat(z_u_signed), _flat(shift_signed),
                    par.phi, par.B_0):
@@ -423,6 +430,19 @@ class LoTRS:
     #  Fig. 6  --  Vf  (verification)
     # ==================================================================
 
+    def _aggregate_norms_ok(self, sigma):
+        """Bounds shared by the verifier, signing restart, and codec model."""
+        par, ring = self.par, self.Rq
+        for field, l2_bound, inf_bound in (
+                ("z_tilde", par.B_tilde_z, par.B_tilde_z_inf),
+                ("r_tilde", par.B_tilde_r, par.B_tilde_r_inf),
+                ("e_tilde", par.B_tilde_e, par.B_tilde_e_inf)):
+            vec = sigma[field]
+            if (ring.vec_l2_norm_sq(vec) > l2_bound ** 2
+                    or ring.vec_inf_norm(vec) > inf_bound):
+                return False
+        return True
+
     def verify(self, pp, mu, sigma, pk_table):
         """
         Vf(pp, mu, sigma_tilde, PK) -> bool.   [Fig. 6]
@@ -430,6 +450,9 @@ class LoTRS:
         par = self.par
         Rq, Rqh = self.Rq, self.Rqh
         kappa, d = par.kappa, par.d
+
+        if not self._valid_pk_table(pk_table):
+            return False
 
         pi = sigma["pi"]
         z_tilde = sigma["z_tilde"]
@@ -463,23 +486,8 @@ class LoTRS:
         if max(abs(c) for c in _flat(z_b_signed)) > 6 * par.phi_b * par.B_b:
             return False
 
-        # -- line 5: norm bounds on z_tilde, r_tilde, e_tilde.
-        # Use the triangle bound for e_u = z''_u + r''_u: width
-        # sigma_0 + sigma_0_prime.  This is intentionally looser than the
-        # compact max-width expression and admits honest signatures with
-        # comfortable slack.
-        t = par.tail_t
-        B_z = par.sigma_0 * t * math.sqrt(par.T * par.d * par.l)
-        B_r = par.sigma_0_prime * t * math.sqrt(
-            par.T * par.d * par.l_prime)
-        B_e = (par.sigma_0 + par.sigma_0_prime) * t * math.sqrt(
-            par.T * par.d * par.k)
-
-        if math.sqrt(Rq.vec_l2_norm_sq(z_tilde)) > B_z:
-            return False
-        if math.sqrt(Rq.vec_l2_norm_sq(r_tilde)) > B_r:
-            return False
-        if math.sqrt(Rq.vec_l2_norm_sq(e_tilde)) > B_e:
+        # Aggregate l2 and coefficientwise bounds (September verifier).
+        if not self._aggregate_norms_ok(sigma):
             return False
 
         # -- lines 7-9: reconstruct  f_{j,0}  from  f_{j,1..beta-1}
@@ -604,21 +612,32 @@ class LoTRS:
         sks[u]  = secret key of signer u  (row u of column ell).
         Returns the aggregated signature  sigma_tilde, or raises on
         exhausting max_attempts.
+
+        This centralized reproducibility harness derives separate shared
+        and private session seeds from signing_seed. In a distributed
+        execution each signer supplies its own private local_seed to sign1;
+        the harness master seed must never be shared between signers.
         """
         par = self.par
         T = par.T
         assert len(sks) == T
+        if not isinstance(signing_seed, bytes) or len(signing_seed) != 32:
+            raise ValueError("signing_seed must be 32 bytes")
+        if not self._valid_pk_table(pk_table):
+            raise ValueError("PK must have N columns of T distinct canonical keys")
         pk_hash = self._pk_hash(pk_table)
+        rho = derive_subseed(signing_seed, b"rho")
+        local_seeds = [derive_subseed(signing_seed, b"local", u)
+                       for u in range(T)]
 
         for attempt in range(par.max_attempts):
-            rho = derive_subseed(signing_seed, b"rho", attempt)
 
             # ---- round 1 ----
             states = []
             all_coms = []
             for u in range(T):
                 st, com = self.sign1(pp, sks[u], u, ell, mu,
-                                     pk_table, rho, attempt, pk_hash)
+                                     pk_table, rho, attempt, local_seeds[u], pk_hash)
                 states.append(st)
                 all_coms.append(com)
 
@@ -636,7 +655,9 @@ class LoTRS:
                 continue
 
             # ---- aggregate ----
-            return self.sagg(sigmas)
+            sig = self.sagg(sigmas)
+            if self._aggregate_norms_ok(sig):
+                return sig
 
         raise RuntimeError(
             f"signing failed after {par.max_attempts} attempts")
@@ -745,14 +766,14 @@ class LoTRS:
         x_hat = Rqh.from_centered(self.Rq.centered(x))
         z_b = Rqh.vec_add(r_a, Rqh.vec_scale(x_hat, r_b))
 
-        # -- line 22: RejOp on z_b
+        # -- line 22: Rej on z_b
         z_b_signed = [Rqh.centered(c) for c in z_b]
         v_signed = [Rqh.centered(c)
                     for c in Rqh.vec_scale(x_hat, r_b)]
         xof_rej_b = make_xof(rho, b"rej_b", attempt)
-        if not rej_op(xof_rej_b,
-                      _flat(z_b_signed), _flat(v_signed),
-                      par.phi_b, par.B_b):
+        if not rej(xof_rej_b,
+                   _flat(z_b_signed), _flat(v_signed),
+                   par.phi_b, par.B_b):
             return None
 
         # -- lines 23-28: f_{j,i} = x * delta_{ell_j, i} + a_{j,i}
@@ -878,6 +899,33 @@ class LoTRS:
     # ==================================================================
     #  Internal helpers
     # ==================================================================
+
+    def _valid_pk_table(self, pk_table):
+        """Check canonical keys and the paper's column-injectivity condition.
+
+        A key may occur in different columns, but only once per column.
+        """
+        par = self.par
+        if not isinstance(pk_table, (list, tuple)) or len(pk_table) != par.N:
+            return False
+        for col in pk_table:
+            if not isinstance(col, (list, tuple)) or len(col) != par.T:
+                return False
+            seen = set()
+            for pk in col:
+                if not isinstance(pk, (list, tuple)) or len(pk) != par.k:
+                    return False
+                for poly in pk:
+                    if not isinstance(poly, (list, tuple)) or len(poly) != par.d:
+                        return False
+                    if any(not isinstance(c, int) or not 0 <= c < par.q
+                           for c in poly):
+                        return False
+                key = tuple(tuple(poly) for poly in pk)
+                if key in seen:
+                    return False
+                seen.add(key)
+        return True
 
     def _expand_A(self, pp):
         """Expand public matrix  A in R_q^{k x l}  from seed."""

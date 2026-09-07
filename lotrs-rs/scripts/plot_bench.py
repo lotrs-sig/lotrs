@@ -184,7 +184,7 @@ def write_csv(rows, path):
             "verify_rs_ms", "verify_rs_std_ms", "verify_rs_median_ms",
             "sk_bytes", "pk_bytes", "ring_bytes", "sig_bytes"]
     with open(path, "w", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=cols)
+        w = csv.DictWriter(f, fieldnames=cols, lineterminator="\n")
         w.writeheader()
         for r in sorted(rows, key=lambda r: (r.get("N", 0), r.get("T", 0))):
             w.writerow({k: r.get(k, "") for k in cols})
@@ -254,16 +254,15 @@ def plot_breakdown(rows, path):
     Three stacks per (N, T) cell, bottom to top:
 
     * ``Sign_DualMS`` — sign1 (T-fold commitments) + sign2 minus the
-      binary proof + sagg.  At PRODUCTION this is ≈ 99% sign1 — the
-      DualMS multi-sig is essentially the per-signer round-1 work.
+      binary proof + sagg.
     * ``Sign_RS`` — `sign_bin`, the binary ring proof.  Run once per
       rejection-sampling attempt now that `pi` is broadcast.
     * ``Context / setup`` — `Sign − Sign_DualMS − Sign_RS`.  One-shot
       per sign call: matrix expansion (A/B/G + NTT prep), PK-table
       digest, and the α_u precompute.  Independent of attempts.
 
-    Bar heights carry the geometric attempt-count variance (μ ≈ 6,
-    σ ≈ μ) — see `data.csv :: attempts` for the per-cell mean.
+    Bar heights include the attempt-count variance; see `data.csv`
+    for each cell's observed mean and standard deviation.
     """
     cells = sorted([r for r in rows if is_threshold(r)
                     and "sign_dualms_ms" in r],
@@ -458,9 +457,8 @@ def emit_summary_table(rows, path):
         if rs_alone:
             f.write("## RS-alone (T=1)\n\n")
             f.write("Plain ring signature: one signer, ring of N keys.  "
-                    "Numbers are the LoTRS protocol at T=1, *not* re-tuned "
-                    "(φ=22·T is small at T=1, so attempt counts are "
-                    "inflated relative to a properly-tuned standalone RS).\n\n")
+                    "The run retains the LoTRS lattice and masking policy "
+                    "specified in the input report.\n\n")
             f.write("| N | Sign (s) | Verify (ms) | sig (KiB) | attempts |\n")
             f.write("|---:|---:|---:|---:|---:|\n")
             for r in rs_alone:

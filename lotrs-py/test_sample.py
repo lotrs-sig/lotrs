@@ -246,6 +246,14 @@ def test_cdt_terminates():
 
 # ---- run all -------------------------------------------------------------
 
+def test_rej_accepts_negative_inner_products():
+    """Ordinary Rej must not inherit the removed RejOp half-space filter."""
+    from sample import rej
+    accepted = sum(rej(make_xof(bytes([i]) * 32, b"rej-negative"),
+                       [-1], [1], 24.0, 1.0) for i in range(128))
+    assert 50 < accepted < 110, accepted
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items())
              if k.startswith("test_") and callable(v)]

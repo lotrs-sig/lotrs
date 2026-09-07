@@ -3,10 +3,26 @@ test_params.py -- Unit tests for LoTRS parameter sets.
 """
 
 import math
+import json
+from pathlib import Path
 from params import LoTRSParams, TEST_PARAMS
 
 
 # ---- parameter consistency ---------------------------------------------------
+
+def test_artifact_parameter_manifest():
+    from params import PRODUCTION_PARAMS, BENCH_PARAMS, BENCH_4OF32
+    manifest = Path(__file__).resolve().parent.parent / "parameters.json"
+    expected = json.loads(manifest.read_text())
+    for key, value in expected.items():
+        assert getattr(PRODUCTION_PARAMS, key) == value, key
+    for par in (BENCH_PARAMS, BENCH_4OF32):
+        for key, value in expected.items():
+            if key not in ("name", "beta", "T", "phi"):
+                assert getattr(par, key) == value, (par.name, key)
+        assert par.phi == max(22 * par.T, 1100)
+    assert expected["q"] == 2**43 - 67
+    assert expected["q_hat"] == 2**35 - 451
 
 def test_N_equals_beta_kappa():
     p = TEST_PARAMS
@@ -120,6 +136,23 @@ def test_security_checks_pass_production():
     from params import PRODUCTION_PARAMS, BENCH_PARAMS
     PRODUCTION_PARAMS.check_security()
     BENCH_PARAMS.check_security()
+
+
+def test_regularity_rejects_old_threshold_scaling():
+    from dataclasses import replace
+    from params import BENCH_4OF32
+    try:
+        replace(BENCH_4OF32, phi=22 * BENCH_4OF32.T).check_security()
+    except AssertionError as e:
+        assert "regularity" in str(e)
+    else:
+        raise AssertionError("small thresholds require a regularity floor")
+
+
+def test_aggregate_error_variance():
+    p = TEST_PARAMS
+    assert math.isclose(p.sigma_tilde_e ** 2,
+                        p.T * (p.sigma_0 ** 2 + p.sigma_0_prime ** 2))
 
 
 def test_mask_sampler_declared_per_parameter_set():

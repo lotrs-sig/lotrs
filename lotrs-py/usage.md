@@ -14,15 +14,15 @@ Python 3.10+. No compiled extensions.
 
 ```bash
 python test_ring.py       # ring arithmetic + CRT-NTT (22 tests)
-python test_sample.py     # XOF samplers, CDT + FACCT, rejection sampling (26 tests)
-python test_params.py     # parameter consistency (24 tests)
-python test_lotrs.py      # scheme unit + end-to-end tests (10 tests)
-python test_codec.py      # serialization, Rice coding, test vectors (26 tests)
+python test_sample.py     # XOF samplers, CDT + FACCT, rejection sampling (27 tests)
+python test_params.py     # parameter consistency (27 tests)
+python test_lotrs.py      # scheme unit + end-to-end tests (12 tests)
+python test_codec.py      # serialization, Rice coding, test vectors (23 tests)
 python test_wtilde.py     # w-tilde compression tests (16 tests)
-python test_e2e.py        # full pipeline and tampering tests (13 tests)
+python test_e2e.py        # full pipeline and tampering tests (15 tests)
 ```
 
-137 tests total across 7 files. First run takes a few seconds to build the small-sigma CDTs; subsequent scheme operations reuse the cached tables.  Rust mirror at `../lotrs-rs/` adds 48 unit + 12 interop + 1 sampler KAT — see [`lotrs-rs/README.md`](../lotrs-rs/README.md).
+The test scripts cover arithmetic, sampling, parameter-manifest agreement, private session randomness, column-injectivity, serialization and end-to-end signing. First run builds the small-sigma CDTs; subsequent scheme operations reuse the cached tables. The Rust mirror adds unit, interop, parameter-manifest and sampler tests.
 
 ### Module self-tests
 
@@ -77,14 +77,18 @@ assert scheme.verify(pp, mu, sig, pk_table)
 For applications that need to inspect intermediate state or simulate the interactive protocol across a network:
 
 ```python
-from sample import make_xof
+from sample import derive_subseed
 
-rho = make_xof(signing_seed, b"rho", attempt).read(32)
+rho = derive_subseed(signing_seed, b"rho")
+# Centralized simulation only: each distributed signer instead samples
+# its own private local_seed. Never share this harness's signing_seed.
+local_seeds = [derive_subseed(signing_seed, b"local", u) for u in range(T)]
 
 # Round 1: each signer produces commitments
 states, all_coms = [], []
 for u in range(T):
-    st, com = scheme.sign1(pp, sks[u], u, ell, mu, pk_table, rho, attempt)
+    st, com = scheme.sign1(pp, sks[u], u, ell, mu, pk_table, rho, attempt,
+                          local_seeds[u])
     states.append(st)
     all_coms.append(com)
 
@@ -129,9 +133,13 @@ python vectors.py --out vectors.json          # generate from fixed seeds
 python vectors.py --verify vectors.json       # re-derive and compare byte-for-byte
 ```
 
-All randomness derives from deterministic seeds. The `sign()` convenience method handles the restart loop deterministically: attempt `i` derives `rho_i = SHAKE128(signing_seed || "rho" || i)`.
+The centralized `sign()` harness derives shared `rho` and separate private
+signer seeds from `signing_seed` once per session. Each restart counter
+selects fresh streams under those fixed seeds. Distributed signers must
+generate their own private seeds; the harness's master seed is not shared.
 
 Fixed seeds used by `vectors.py`:
+
 - pp seed: `00 01 02 ... 1f`
 - signer (col, row): `bytes([col ^ 0x40, row ^ 0x80]) + b'\x00' * 30`
 - signing seed: `aa aa ... aa`
@@ -166,62 +174,35 @@ Expected ~33 signing attempts per signature (μ·μ_a·μ_b·μ_BG·μ_fg at the
 
 ### BENCH_4OF32 (4-of-32 benchmark-only variant)
 
-The three d=128 sets all share the same lattice (`k=12, l=5, l'=6, n̂=11, k̂=8`, `q = q_hat = 274877906837`, `phi_a=24, phi_b=4`, `K_A=28, K_B=5, K_w=5`, `mask_sampler="facct"`). Only `beta`, `T`, and `phi = 22·T` differ. All are tracked against `estimator/lotrs_estimate.py`.
+The three d=128 sets share `k=14, l=20, l'=21, n_hat=12, k_hat=11`,
+`q=8796093022141`, `q_hat=34359737917`, `phi_a=phi_b=24`,
+`K_A=28, K_B=K_w=5`, and `mask_sampler="facct"`.
+They use `phi=max(22*T,1100)`; all three shipped profiles have `phi=1100`
+and `sigma_0 ≈ 6.97 × 10^7`.
 
-"Expected attempts" below is the estimator heuristic μ_total; empirical attempts may be slightly higher because the signer additionally performs a `w̃₀`-stability restart on top of the rejection checks counted here.
+| Profile | N | T |
+|---|---:|---:|
+| `BENCH_4OF32` | 32 | 4 |
+| `BENCH_PARAMS` | 32 | 16 |
+| `PRODUCTION_PARAMS` | 100 | 50 |
 
-Probes the smaller-T regime against the same MSIS lattice as `BENCH_PARAMS`.
+The full production profile is specified in `../parameters.json`. See
+[the estimator documentation](../estimator/README.md) for measured and analytic
+results and the estimator's security limitations. The name `lotrs-128`
+is an identifier, not a validated security level.
 
-| Parameter | Value |
-|-----------|-------|
-| beta, N, T | 32, 32, 4 |
-| phi | 88.0 (= 22 · T) |
-| Signature size | ~22 KB |
-| Expected attempts (heuristic) | ~3.0 |
-| σ₀ | ≈ 3.9 × 10⁶ |
-
-Not independently re-run by `estimator/lotrs_estimate.py` for this specific T — security argument is qualitative (smaller T against the same MSIS lattice). Use `BENCH_PARAMS` or `PRODUCTION_PARAMS` for any security-sensitive claim.
-
-### BENCH_PARAMS (16-of-32 benchmark set)
-
-Recommended benchmark point.
-
-| Parameter | Value |
-|-----------|-------|
-| beta, N, T | 32, 32, 16 |
-| phi | 352.0 (= 22 · T) |
-| Signature size | ~23 KB |
-| Expected attempts (heuristic) | ~3.0 |
-| σ₀ | ≈ 1.6 × 10⁷ |
-| Security (BKZ cost_pq) | 87 (binary ASIS) / 90 (DualMS ASIS) |
-
-### PRODUCTION_PARAMS (Table 3 of the paper)
-
-Full 50-of-100 set. Matches `estimator/LoTRS-Estimate-Output-N100T50.txt`. At d=128 the CRT-NTT path (`aux_ntt.py`) is active — signing and verification are tractable in pure Python.
-
-| Parameter | Value |
-|-----------|-------|
-| beta, N, T | 100, 100, 50 |
-| phi | 1100.0 (= 22 · T) |
-| Signature size | ~35 KB |
-| Expected attempts (heuristic) | ~3.0 |
-| σ₀ | ≈ 4.9 × 10⁷ |
-| Security (BKZ cost_pq) | 87 (binary ASIS) / 90 (DualMS ASIS) |
+The verifier checks both l2 and infinity norms of the aggregate responses.
+The aggregate error width is `sqrt(T*(sigma_0^2+sigma_0_prime^2))`.
+The binary proof uses ordinary `Rej` for `z_b`, and keeps every `z_b`
+coefficient in its lossless Rice encoding. The `kappa=1` commitment
+stability check contributes no restarts.
 
 ## Benchmarks
 
-Wall-clock timings of the high-level primitives are produced from the
-Rust implementation, not from Python.  The authoritative numbers live
-in [`../lotrs-rs/README.md`](../lotrs-rs/README.md) § *Benchmarks* —
-see there for the full `N × T` grid at `N ∈ {32, 100}` and the
-threshold sweep, plus the standalone RS (`T = 1`) and DualMS (`N = 1`)
-edges, along with the averaging methodology (`N = 100` signing-seed
-samples per cell, interleaved across cells so frequency-scaling and
-scheduler noise average evenly).  Under v1.5 parameters the
-estimator heuristic gives `μ_total ≈ 3.0`; the empirical mean is in
-the 6–7 range because the implementation also restarts on the
-additional `w̃₀`-stability check used by the κ=1
-commitment-compression path.
+Wall-clock timings are produced by Rust. The current reports live in
+[`../lotrs-rs/bench-out/`](../lotrs-rs/bench-out/).
+The current full-profile repetition heuristic is 4.7728 attempts. The
+benchmark samples 100 signing seeds per cell, interleaved across cells.
 
 `examples/bench.rs` supports two modes:
 
@@ -235,23 +216,22 @@ cargo run --release --example bench -- \
     --grid "32,1:4:8:16:32;100,1:5:10:25:50;1,2:4:8:16"
 ```
 
-Full-grid wall-clock for the canonical reproduction is ~8 minutes on
+Allow approximately 15 minutes for the full grid on
 a Ryzen AI 9 HX 370 (release build, `rayon` multi-threaded).
 
 ## Mapping to the paper
 
 | Paper figure | Code method |
 |-------------|-------------|
-| Fig. 4, Setup | `LoTRS.setup()` |
-| Fig. 4, KGen | `LoTRS.keygen()` |
-| Fig. 4, KAgg | `LoTRS.kagg()` |
-| Fig. 4, Sign_1 | `LoTRS.sign1()` |
-| Fig. 4, SAgg | `LoTRS.sagg()` |
-| Fig. 5, Sign_2 | `LoTRS.sign2()` — includes w̃₀ stability check |
+| Fig. 2, Setup | `LoTRS.setup()` |
+| Fig. 2, KGen | `LoTRS.keygen()` |
+| Fig. 2, KAgg | `LoTRS.kagg()` |
+| Fig. 3, Sign_1 | `LoTRS.sign1()` |
+| Fig. 6, SAgg | `LoTRS.sagg()` |
+| Fig. 4, Sign_2 | `LoTRS.sign2()` — includes w̃₀ stability check |
 | Fig. 5, Sign_bin | `LoTRS._sign_bin()` — w̃₀^(1) excluded from pi |
-| Fig. 6, Vf | `LoTRS.verify()` — reconstructs ŵ₀^(1) from verification eq. |
-| Fig. 1, Rej | `sample.rej()` |
-| Fig. 1, RejOp | `sample.rej_op()` |
+| Fig. 7, Vf | `LoTRS.verify()` — reconstructs ŵ₀^(1) from verification eq. |
+| Fig. 8, Rej (also used for z_b) | `sample.rej()` |
 | Table 2 | `params.LoTRSParams` properties |
-| Section 3.2, encoding | `codec.LoTRSCodec` |
+| Section 4.1, encoding | `codec.LoTRSCodec` |
 | — (KAT infra) | `vectors.generate()` / `vectors.verify_vectors()` |

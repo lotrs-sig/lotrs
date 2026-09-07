@@ -67,6 +67,10 @@ class LoTRSParams:
     # overrides with a larger value.
     tail_t: float = 1.2
 
+    # Coefficientwise aggregate-response bounds used by the infinity-norm
+    # DualMS reduction (September paper, Table 2).
+    tail_inf: float = 12.0
+
     # -- Mask Gaussian backend ---------------------------------------------
     # Declares which Gaussian sampler `LoTRS` uses for the two masking
     # widths sigma_0 / sigma_0_prime.  Kept explicit per parameter set
@@ -167,6 +171,43 @@ class LoTRSParams:
     def sigma_b(self):
         """Gaussian width for  z_b  in Sign_bin."""
         return self.phi_b * self.B_b
+
+    @property
+    def sigma_tilde_z(self):
+        return self.sigma_0 * math.sqrt(self.T)
+
+    @property
+    def sigma_tilde_r(self):
+        return self.sigma_0_prime * math.sqrt(self.T)
+
+    @property
+    def sigma_tilde_e(self):
+        """Independent error variances add (B_hat_0 in Table 2)."""
+        return math.sqrt(self.sigma_0 ** 2 + self.sigma_0_prime ** 2) * math.sqrt(self.T)
+
+    @property
+    def B_tilde_z(self):
+        return self.tail_t * self.sigma_tilde_z * math.sqrt(self.d * self.l)
+
+    @property
+    def B_tilde_r(self):
+        return self.tail_t * self.sigma_tilde_r * math.sqrt(self.d * self.l_prime)
+
+    @property
+    def B_tilde_e(self):
+        return self.tail_t * self.sigma_tilde_e * math.sqrt(self.d * self.k)
+
+    @property
+    def B_tilde_z_inf(self):
+        return self.tail_inf * self.sigma_tilde_z
+
+    @property
+    def B_tilde_r_inf(self):
+        return self.tail_inf * self.sigma_tilde_r
+
+    @property
+    def B_tilde_e_inf(self):
+        return self.tail_inf * self.sigma_tilde_e
 
     # -- regularity widths (sigma_s, sigma_s_prime) ------------------------
 
@@ -331,13 +372,19 @@ class LoTRSParams:
     def check_security(self):
         """Check security-relevant conditions from Section 3.1.
 
-        Runs the basic correctness checks plus the range-proof
+        Runs correctness and regularity checks plus the range-proof
         condition from Lemma 1:
             q_hat > max{ d * (2 + 12*phi_a*B_a)^2,  2*N^2 }.
         Does NOT claim to replace the sage-based estimator — for real
         security validation use estimator/lotrs_estimate.py.
         """
         self.check()
+
+        for label, width, threshold in (
+                ("sigma_0", self.sigma_0, self.sigma_s),
+                ("sigma_0_prime", self.sigma_0_prime, self.sigma_s_prime)):
+            assert width > threshold, (
+                f"regularity: {label}={width} must exceed {threshold}")
 
         # Range-proof / well-formedness condition (Lemma 1).
         # Mirrors estimator/lotrs_param_checks.py
@@ -394,39 +441,35 @@ TEST_PARAMS = LoTRSParams(
 
 
 # Production parameter set: 50-of-100 threshold signature.
-# Matches estimator/lotrs_estimate.py (output:
-# estimator/LoTRS-Estimate-Output-N100T50.txt).
-# Signature size ~ 35 KB, ~ 3 expected signing attempts (estimator
-# heuristic; empirical attempts may be slightly higher because the
-# signer also performs a w̃₀-stability restart).
-# Expected post-quantum security ~ 87 bits (Binary-proof ASIS),
-# ~ 90 bits (DualMS ASIS).
+# Base values match parameters.json and estimator/lotrs_estimate.py.
+# Revised lattice dimensions and exact primes for the September paper.
+# Security and restart estimates must use the verifier's actual bounds.
 PRODUCTION_PARAMS = LoTRSParams(
     name="lotrs-128",
     d=128,
-    q=274877906837,      # largest prime < 2^38 with q ≡ 5 mod 8
-    q_hat=274877906837,  # largest prime < 2^38 with q_hat ≡ 5 mod 8
-                         # (prime_5_mod_8(38) in lotrs_estimate.py)
+    q=8796093022141,    # largest prime < 2^43 with q ≡ 5 mod 8
+    q_hat=34359737917,  # largest prime < 2^35 with q_hat ≡ 5 mod 8
+                         # (prime_5_mod_8(35) in lotrs_estimate.py)
     kappa=1,
     beta=100,
     T=50,
-    k=12,
-    l=5,
-    l_prime=6,
-    n_hat=11,
-    k_hat=8,
+    k=14,
+    l=20,
+    l_prime=21,
+    n_hat=12,
+    k_hat=11,
     w=31,
     eta=1,
     phi=1100.0,          # 22 * T  per lotrs_estimate.py
     phi_a=24.0,          # fixed across T
-    phi_b=4.0,
+    phi_b=24.0,
     K_A=28,              # ceil(log2(n̂·d·(w·2^K_B−1)/ln μ_BG_target))
                          # with μ_BG_target = 1.01
     K_B=5,
     K_w=5,
     lam=128,
     max_attempts=200,
-    mask_sampler="facct",    # sigma_0 ≈ 5e7 — CDT would be multi-GB
+    mask_sampler="facct",    # sigma_0 ≈ 6.97e7 — CDT would be multi-GB
 )
 
 
@@ -435,21 +478,21 @@ PRODUCTION_PARAMS = LoTRSParams(
 BENCH_PARAMS = LoTRSParams(
     name="lotrs-bench-16of32",
     d=128,
-    q=274877906837,
-    q_hat=274877906837,
+    q=8796093022141,
+    q_hat=34359737917,
     kappa=1,
     beta=32,
     T=16,
-    k=12,
-    l=5,
-    l_prime=6,
-    n_hat=11,
-    k_hat=8,
+    k=14,
+    l=20,
+    l_prime=21,
+    n_hat=12,
+    k_hat=11,
     w=31,
     eta=1,
-    phi=352.0,           # 22 * T
+    phi=1100.0,          # max(22 * T, 1100): regularity floor
     phi_a=24.0,
-    phi_b=4.0,
+    phi_b=24.0,
     K_A=28,
     K_B=5,
     K_w=5,
@@ -464,21 +507,21 @@ BENCH_PARAMS = LoTRSParams(
 BENCH_4OF32 = LoTRSParams(
     name="lotrs-bench-4of32",
     d=128,
-    q=274877906837,
-    q_hat=274877906837,
+    q=8796093022141,
+    q_hat=34359737917,
     kappa=1,
     beta=32,
     T=4,
-    k=12,
-    l=5,
-    l_prime=6,
-    n_hat=11,
-    k_hat=8,
+    k=14,
+    l=20,
+    l_prime=21,
+    n_hat=12,
+    k_hat=11,
     w=31,
     eta=1,
-    phi=88.0,            # 22 * T
+    phi=1100.0,          # max(22 * T, 1100): regularity floor
     phi_a=24.0,
-    phi_b=4.0,
+    phi_b=24.0,
     K_A=28,
     K_B=5,
     K_w=5,

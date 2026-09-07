@@ -14,15 +14,15 @@ The public API mirrors the protocol figures of the accompanying paper:
 
 | Paper            | Python                              |
 |------------------|-------------------------------------|
-| Fig. 4 `Setup`   | `LoTRS.setup`                       |
-| Fig. 4 `KGen`    | `LoTRS.keygen`                      |
-| Fig. 4 `KAgg`    | `LoTRS.kagg`                        |
-| Fig. 4 `Sign₁`   | `LoTRS.sign1`                       |
-| Fig. 4 `SAgg`    | `LoTRS.sagg`                        |
-| Fig. 5 `Sign₂`   | `LoTRS.sign2`                       |
+| Fig. 2 `Setup`   | `LoTRS.setup`                       |
+| Fig. 2 `KGen`    | `LoTRS.keygen`                      |
+| Fig. 2 `KAgg`    | `LoTRS.kagg`                        |
+| Fig. 3 `Sign₁`   | `LoTRS.sign1`                       |
+| Fig. 6 `SAgg`    | `LoTRS.sagg`                        |
+| Fig. 4 `Sign₂`   | `LoTRS.sign2`                       |
 | Fig. 5 `Sign_bin`| `LoTRS._sign_bin`                   |
-| Fig. 6 `Vf`      | `LoTRS.verify`                      |
-| Fig. 1 `Rej` / `RejOp` | `sample.rej` / `sample.rej_op`|
+| Fig. 7 `Vf`      | `LoTRS.verify`                      |
+| Fig. 8 `Rej` | `sample.rej` (all responses, including z_b) |
 | Table 2 bounds   | properties on `LoTRSParams`         |
 | Table 3 params   | `PRODUCTION_PARAMS`                 |
 
@@ -214,7 +214,7 @@ Standard rejection sampling `Rej(z, v, phi, K)` from Fig. 1 (left column). Uses 
 ```python
 rej_op(xof, z_flat: list[int], v_flat: list[int], phi: float, K: float) -> bool
 ```
-Optimised rejection sampling `RejOp(z, c, phi, K)` from Fig. 1 (right column). Uses `mu(phi) = exp(1/(2*phi^2))` (no 12/phi term). Returns `True` on accept, `False` on reject.
+`RejOp(z, c, phi, K)` helper; unused by the signing protocol. Uses `mu(phi) = exp(1/(2*phi^2))` (no 12/phi term). Returns `True` on accept, `False` on reject.
 
 ### Flat helpers
 
@@ -394,6 +394,7 @@ For each coefficient `c` (in centered form), writes `c = high * 2^K + low` with 
 | `max_attempts` | int | — | Max signing restarts (default 2000) |
 | `eta_prime` | int | eta' | Dual secret bound (default: use eta) |
 | `tail_t` | float | t | Gaussian tail factor for aggregated l2 bounds (default 1.2) |
+| `tail_inf` | float | t_inf | Coefficientwise aggregate tail factor (default 12) |
 | `eps_tot` | float | ε_tot | Tail budget for binary-proof bound checks (default 0.01, matching `estimator/lotrs_finder.py`); each of the four checks sized for violation probability ≤ ε_tot / 4 |
 
 #### Derived properties
@@ -410,6 +411,10 @@ For each coefficient `c` (in centered form), writes `c = high * 2^K + low` with 
 | `sigma_0_prime` | `phi * B_0_prime` | Gaussian width for r_{u,0} |
 | `sigma_a` | `phi_a * B_a` | Gaussian width for f_1 (binary proof, R_qhat) |
 | `sigma_b` | `phi_b * B_b` | Gaussian width for z_b (binary proof, R_qhat) |
+| `sigma_tilde_z`, `sigma_tilde_r` | `sqrt(T)*sigma_0`, `sqrt(T)*sigma_0_prime` | Aggregate widths |
+| `sigma_tilde_e` | `sqrt(T)*sqrt(sigma_0^2+sigma_0_prime^2)` | Aggregate error width |
+| `B_tilde_z`, `B_tilde_r`, `B_tilde_e` | `tail_t * width * sqrt(d * dimension)` | Aggregate l2 bounds |
+| `B_tilde_z_inf`, `B_tilde_r_inf`, `B_tilde_e_inf` | `tail_inf * width` | Aggregate infinity bounds |
 | `sigma_s` | `(2d/sqrt(2pi)) * q^{k/(l+k) + 2/(d(l+k))}` | DualMS regularity threshold |
 | `sigma_s_prime` | Same with l' | Dual regularity threshold |
 | `mu_phi` | `exp(12/phi + 1/(2*phi^2))` | Expected restarts per signer |
@@ -423,23 +428,28 @@ For each coefficient `c` (in centered form), writes `c = high * 2^K + low` with 
 ```python
 par.check()            # basic consistency: primes mod 8, d power of 2,
                        # sigma ranges against the right modulus (q vs q_hat)
-par.check_security()   # adds: range-proof condition, challenge-difference
+par.check_security()   # adds: regularity, range-proof condition, challenge-difference
                        # invertibility (Lemma 1).  Toy params may pass
                        # check() but not check_security().
 ```
 
 #### Concrete parameter sets
 
-All three d=128 sets share the same lattice: `k=12, l=5, l'=6, n̂=11, k̂=8`, `q = q_hat = 274877906837` (largest prime < 2^38 with `q ≡ 5 mod 8`), `K_A=28, K_B=5, K_w=5`, `phi_a=24, phi_b=4`.  Only `T`, `phi`, and `beta` vary.  All are tracked against `estimator/lotrs_estimate.py`.  Expected-attempt figures below are the estimator heuristic μ_total — empirical means in the Rust bench run ~6, about 2× the heuristic, because of the additional `w̃₀`-stability restart.
+All three d=128 sets share the PDF Table 3 lattice: `k=14, l=20, l'=21,
+n_hat=12, k_hat=11`, `q=8796093022141 = 2^43-67`,
+`q_hat=34359737917 = 2^35-451`, `K_A=28, K_B=K_w=5`,
+`phi_a=phi_b=24`. Each uses `phi=max(22*T,1100)`.
+The manifest in `../parameters.json` pins the full production profile.
+See [the estimator documentation](../estimator/README.md) for size
+calculations and attack-cost estimates.
 
-- `TEST_PARAMS` — small test set (d=32, N=4, T=2, q=4194389, q_hat=7000061). Fast, not secure. Uses distinct q/q_hat to exercise both rings. NTT path is disabled at d=32; schoolbook is used. `mask_sampler = "cdt"`.
-- `BENCH_4OF32` — 4-of-32 benchmark variant (d=128, β=32, T=4, `phi = 88 = 22·T`). `mask_sampler = "facct"` (σ₀ ≈ 3.9 × 10⁶).  Probes the small-T regime at N=32.
-- `BENCH_PARAMS` — 16-of-32 benchmark set (d=128, β=32, T=16, `phi = 352 = 22·T`).  Signature ~25 KiB, ~3.0 expected attempts (heuristic).
-- `PRODUCTION_PARAMS` — 50-of-100 set (d=128, β=100, T=50, `phi = 1100 = 22·T`).  Signature ~36 KiB, ~3.0 expected attempts (heuristic). Matches `estimator/LoTRS-Estimate-Output-N100T50.txt`.
+- `TEST_PARAMS`: d=32, N=4, T=2, q=4194389, q_hat=7000061; correctness tests only, with CDT masks.
+- `BENCH_4OF32`: d=128, N=32, T=4, phi=1100; FACCT masks.
+- `BENCH_PARAMS`: d=128, N=32, T=16, phi=1100; FACCT masks.
+- `PRODUCTION_PARAMS`: d=128, N=100, T=50, phi=1100; FACCT masks.
 
----
-
-## `lotrs.py` — LoTRS scheme
+All d=128 profiles have `sigma_0 ≈ 6.97 × 10^7`. The `lotrs-128` name is an
+identifier; the bundled estimator does not establish 128-bit PQ security.
 
 ### `LoTRS(par: LoTRSParams)` class
 
@@ -465,10 +475,16 @@ scheme.kagg(pk_table) -> list
 `KAgg(PK)`. Returns `N` aggregated column keys. The implementation first computes a 256-bit SHAKE128 digest of the canonical PK-table serialization with domain tag `pk`, then uses `alpha_u = H_agg(pk_hash, u)` so the full PK table is hashed once rather than once per row.
 
 ```python
-scheme.sign1(pp, sk_u, row_u, ell, mu, pk_table, rho, attempt)
+scheme.sign1(pp, sk_u, row_u, ell, mu, pk_table, rho, attempt, local_seed)
     -> tuple[dict, list]
 ```
 `Sign_1` for one signer. Returns `(state, commitments)` where `commitments[j]` is a vector of `k` ring elements (`w_{u,j}`). The `state` dict carries all values needed by `sign2`.
+
+`local_seed` is a fresh private 32-byte seed for this signer and session;
+`rho` is the shared proof seed. Both remain fixed while `attempt` increments
+after a restart. The centralized `sign` harness derives separate streams
+from a master seed solely for reproducibility; distributed signers must
+retain their private randomness locally.
 
 ```python
 scheme.sagg(sigmas: list[dict]) -> dict
@@ -483,7 +499,7 @@ scheme.sign2(state: dict, all_coms: list, pk_table) -> dict | None
 `Sign_2` for one signer. Takes the signer's state from `sign1` and all signers' round-1 commitments. Returns `{pi, z_u, r_u}` on success, `None` on rejection (triggers restart). Internally:
 1. Aggregates w_tilde and decomposes (high/low bits)
 2. Calls `_sign_bin` for the binary selection proof
-3. Checks w̃₀ stability: rejects if `||w̃₀^(0)||_inf > 2^{K_w-1}` (kappa=1)
+3. Checks w̃₀ stability, which is automatic at `kappa=1` by centered decomposition
 4. Computes z_u response with rejection sampling
 5. Computes auxiliary r_u response
 
@@ -494,7 +510,7 @@ scheme.verify(pp, mu, sigma: dict, pk_table) -> bool
 ```
 `Vf`. Full verification of an aggregated signature. Checks:
 1. Norm bounds on `f1` (`<= B_f1`) and `z_b` (`<= 6 phi_b B_b`), centered infinity norms
-2. L2 norm bounds on `z_tilde`, `r_tilde`, `e_tilde`
+2. L2 and infinity norm bounds on `z_tilde`, `r_tilde`, `e_tilde`
 3. Reconstructs `f_{j,0}` and checks `||f_0||_inf <= B_f0`
 4. Quadratic terms `g0`, `g1` within bounds (computed in R_qhat)
 5. Bai-Galbraith low-bit check on reconstructed `A_hat_bin`
@@ -508,7 +524,11 @@ The w̃₀^(1) is NOT in the signature — the verifier reconstructs it.
 ```python
 scheme.sign(pp, sks, ell, mu, pk_table, signing_seed) -> dict
 ```
-Runs the full two-round ceremony with automatic restart loop. For attempt `i`, derives `rho = SHAKE128(signing_seed || "rho" || i)`. Raises `RuntimeError` after `max_attempts`.
+Runs the centralized two-round ceremony with automatic restart loop.
+Derives shared `rho` and separate private signer seeds once from
+`signing_seed`; attempt counters refresh streams under those fixed seeds.
+The master seed must not be shared in a distributed deployment.
+Raises `RuntimeError` after `max_attempts`.
 
 ### Internal methods
 
@@ -549,7 +569,7 @@ scheme._sign_bin(pp, ell, mu, w_tilde_hi, pk_table, rho, attempt) -> dict | None
 3. Commit: B_bin = G(r_b, b, c)^T, A_bin = G(r_a, a, d)^T — both in R_qhat
 4. Bai-Galbraith decomposition of B_bin and A_bin
 5. Fiat-Shamir challenge x (uses all w_tilde_hi including j=0 internally)
-6. Response z_b = r_a + x*r_b with RejOp (R_qhat)
+6. Response z_b = r_a + x*r_b with ordinary Rej (R_qhat)
 7. Masked opening f_{j,i} = x*delta + a_{j,i} as signed lists; Rej on f1
 8. Quadratic g_{j,i} = f * (x - f) computed in Z, reduced into R_qhat; norm checks
 9. A_hat_bin low-bit stability check (R_qhat)

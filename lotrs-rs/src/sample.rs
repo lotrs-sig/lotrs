@@ -561,7 +561,8 @@ pub fn rej(xof: &mut Xof, z_flat: &[i64], v_flat: &[i64], phi: f64, k_bound: f64
     true
 }
 
-/// `RejOp(z, v, phi, K)` — optimised rejection sampling that exploits
+/// Legacy helper, unused by the September signing protocol.
+/// `RejOp(z, v, phi, K)` is rejection sampling that exploits
 /// `<z, v> ≥ 0` by refusing `<z, v> < 0` outright.  Same return
 /// convention as [`rej`].
 pub fn rej_op(xof: &mut Xof, z_flat: &[i64], v_flat: &[i64], phi: f64, k_bound: f64) -> bool {
@@ -629,6 +630,17 @@ fn sample_u01(xof: &mut Xof) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rej_accepts_negative_inner_products() {
+        let accepted = (0u8..128)
+            .filter(|&i| {
+                let mut xof = Xof::new(&[i; 32], &[Tag::Bytes(b"rej-negative")]);
+                rej(&mut xof, &[-1], &[1], 24.0, 1.0)
+            })
+            .count();
+        assert!(accepted > 50 && accepted < 110, "{accepted}");
+    }
 
     #[test]
     fn determinism() {

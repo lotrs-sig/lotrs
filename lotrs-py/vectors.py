@@ -110,7 +110,7 @@ def generate(par=None):
     x_centered = Rq.centered(sig["pi"]["x"])
 
     vec = {
-        "schema_version": 1,
+        "schema_version": 3,
         "params": par.name,
         "d": par.d,
         "N": N,
@@ -158,6 +158,8 @@ def verify_vectors(vec):
     test vector.  Returns (ok: bool, errors: list[str]).
     """
     par = TEST_PARAMS
+    if vec.get("schema_version") != 3:
+        return False, ["expected vector schema 3 (September Rej and aggregate bounds)"]
     if vec["params"] != par.name:
         return False, [f"params mismatch: {vec['params']} vs {par.name}"]
 

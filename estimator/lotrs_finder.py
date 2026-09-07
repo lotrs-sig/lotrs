@@ -290,7 +290,7 @@ def setLWERank(RHF, d, logq, B, uniform=True):
     print("Trying exact lookup with key =", key)
     if key in table:
         full_dim = table[key]
-        rank = int(round(full_dim / d))
+        rank = int(ceil(full_dim / d))
         print("Exact lookup succeeded")
         print("full LWE dimension =", full_dim)
         print("module rank        =", rank)
@@ -330,7 +330,7 @@ def setLWERank(RHF, d, logq, B, uniform=True):
 
     anchor_dim = table[anchor_key]
     full_dim = anchor_dim + (logq - anchor_logq) * step_size
-    rank = int(round(full_dim / d))
+    rank = int(ceil(full_dim / d))
 
     print("Anchor lookup succeeded")
     print("anchor full dimension =", anchor_dim)
@@ -340,6 +340,32 @@ def setLWERank(RHF, d, logq, B, uniform=True):
 
 """------------------------------------------------------------------------------------------------------------------"""
 """Bin ASIS functions"""
+#Reduce a bucket list to exactly `target` buckets for the ASIS estimator.
+#The binary proof has 6 blocks but ASISParameterSet takes 5.  Deleting a
+#block removes its columns from the AMSIS instance, which makes the
+#instance HARDER and over-states security.  Merging two adjacent blocks
+#into (max(B_i,B_j), m_i+m_j) instead only relaxes the bound on the
+#smaller-bound block, so the estimated instance is at least as easy as
+#the real one and the security number is a conservative lower bound.
+#We merge the adjacent pair whose merge is cheapest, the cost of merging
+#block j+1 into block j being m_{j+1} * log2(B_j / B_{j+1}), i.e. the
+#number of extra "bit-columns" of freedom handed to the attacker.
+def mergeToFiveBuckets(arr, target=5):
+    merged = sorted([[a[0], a[1]] for a in arr], key=lambda x: x[0], reverse=True)
+    while len(merged) > target:
+        costs = [merged[j+1][1] * log(merged[j][0]/merged[j+1][0], 2)
+                 for j in range(len(merged)-1)]
+        j = costs.index(min(costs))
+        print("Merging bucket", j+1, "(log2B =", round(log(merged[j+1][0], 2), 3),
+              ", m =", merged[j+1][1], ") into bucket", j,
+              "(log2B =", round(log(merged[j][0], 2), 3), ", m =", merged[j][1],
+              "); cost =", round(costs[j], 3), "bit-columns")
+        merged[j] = [max(merged[j][0], merged[j+1][0]), merged[j][1] + merged[j+1][1]]
+        del merged[j+1]
+    print("Merged bucket widths:", [a[1] for a in merged],
+          " total =", sum(a[1] for a in merged))
+    return merged
+
 #Set ASIS bounds (B_i, m_i) for binary proof
 def setBinASISBounds(beta, kappa, d, w, nhat, khat, phi_a, phi_b, K_b, eps_total, mu_BG_target=RR(1.01)):
     #Initialise 2d array to be sorted (since ASIS code requires it)
@@ -396,7 +422,8 @@ def setBinASISBounds(beta, kappa, d, w, nhat, khat, phi_a, phi_b, K_b, eps_total
     if B_ae <= 0:
         raise ValueError("Compression parameters invalid: 2^(K_a-1) - w*2^(K_b-1) must be positive.")
 
-    # merge to fit the 5-bucket ASIS estimator
+    # collapse the four dropped-bit bounds into one ASIS block:
+    # max of the bounds, sum of the widths (4*nhat), so no columns are lost
     B_BG = max(B_B0, B_A0, B_be, B_ae)
     m_BG = 4 * nhat
     arr.append([B_BG, m_BG])
@@ -407,30 +434,20 @@ def setBinASISBounds(beta, kappa, d, w, nhat, khat, phi_a, phi_b, K_b, eps_total
 #Set ASIS rank(rows determine hardness)
 def setBinASISRank(d, nhat, khat, RHF_max, logqhat, arr):
     extra = 0.00005
-    print("\n=== Ordered ASIS bounds ===")
-    B1 = arr[0][0]
-    m1 = arr[0][1]
-    print("B1 =", log(B1, 2))
+    print("\n=== Ordered ASIS bounds (all buckets, before merge) ===")
+    for i in range(len(arr)):
+        print("B" + str(i+1), "=", log(arr[i][0], 2), " m" + str(i+1), "=", arr[i][1])
 
-    B2 = arr[1][0]
-    m2 = arr[1][1]
-    print("B2 =", log(B2, 2))
+    marr = mergeToFiveBuckets(arr)
 
-    B3 = arr[2][0]
-    m3 = arr[2][1]
-    print("B3 =", log(B3, 2))
-    
-    B4 = arr[3][0]
-    m4 = arr[3][1]
-    print("B4 =", log(B4, 2))
-    
-    B5 = arr[4][0]
-    m5 = arr[4][1]
-    print("B5 =", log(B5, 2))
-
-    B6 = arr[5][0]
-    m6 = arr[5][1]
-    print("B6 =", log(B6, 2))
+    print("=== Merged ASIS bounds (5 buckets) ===")
+    B1, m1 = marr[0]
+    B2, m2 = marr[1]
+    B3, m3 = marr[2]
+    B4, m4 = marr[3]
+    B5, m5 = marr[4]
+    for i in range(5):
+        print("B" + str(i+1), "=", log(marr[i][0], 2), " m" + str(i+1), "=", marr[i][1])
     
     attack_variant = 0  # The attack variant should be in {0,1,2}. '0' is the "traditional attack". The for-loop below runs over all attacks
     sisrank = nhat
@@ -441,8 +458,7 @@ def setBinASISRank(d, nhat, khat, RHF_max, logqhat, arr):
         q_hat = pow(2, logqhat)
         print("logq_hat =", logqhat)
 
-        #Leave out B3 since it will not impact parameter setting much     
-        params = ASISParameterSet(d, m1+m2+m4+m5+m6, sisrank, B1, B2, B4, B5, B6, m1, m2, m4, m5, m6, q_hat, norm="linf")
+        params = ASISParameterSet(d, m1+m2+m3+m4+m5, sisrank, B1, B2, B3, B4, B5, m1, m2, m3, m4, m5, q_hat, norm="linf")
         try:
             print("Running ASIS_summarize_attacks...")
             (m_pq, b_pq, c_pq) = ASIS_summarize_attacks(params, attack_variant=attack_variant)
@@ -502,7 +518,7 @@ def findBinParams(beta, kappa, logq_min, logq_max, RHF_max, phi_a, phi_b, K_b, e
                     nhat += 10           
             if(nhat*d > 8192):
                 print("Could not find parameters")
-            while(boolChecks):
+            while boolChecks and nhat > 0:
                 output_arr.append([d, logq, khat, nhat, boolChecks])
                 nhat-=1
                 bound_arr = setBinASISBounds(beta, kappa, d, w, nhat, khat, phi_a, phi_b, K_b, eps_total, mu_BG_target)
@@ -523,7 +539,7 @@ def setDualMSMSISBounds(T, kappa, d, w, k, l, l_prime, eta_s, eta_prime_s, t, lo
 
     B_zero = RR(sqrt(d*(l+k))*(eta_s*pow(w, kappa+1)+6*sigma_s*(kappa-1)*pow(w, kappa-1)))
     B_zero_prime = RR(sqrt(d*(l_prime+k))*(eta_prime_s*pow(w, kappa+1)+6*sigma_s_prime*(kappa-1)*pow(w, kappa-1)))
-    B_hat_0 = max(B_zero, B_zero_prime)
+    B_hat_0 = RR(sqrt(pow(B_zero, 2) + pow(B_zero_prime, 2)))
 
     B_z = RR(t*phi*B_zero*sqrt(d*l))
     B_tilde_z = RR(sqrt(T)*B_z)
@@ -546,10 +562,10 @@ def setDualMSMSISBounds(T, kappa, d, w, k, l, l_prime, eta_s, eta_prime_s, t, lo
     if(compress_w):
         B_eta_w = RR(pow(2, K_w0-1))
         print("log2(k*B_eta_w) =", log((k*pow(B_eta_w,2)), 2)) #Need to compare other terms with k*pow(B_eta_w,2)
-        beta_sis = RR(sqrt(4*d*pow(B_det, 2)+ 4*d*pow((kappa+1),2)*(pow(B_Gamma,2)*(pow(B_tilde_z, 2)+pow(B_tilde_r, 2)+pow(B_tilde_e, 2)+k*pow(B_eta_w, 2)))))
+        beta_sis = RR(sqrt(4*d*pow(B_det, 4)+ 4*d*pow((kappa+1),2)*pow(B_det,2)*(pow(B_Gamma,2)*(pow(B_tilde_z, 2)+pow(B_tilde_r, 2)+pow(B_tilde_e, 2)+k*pow(B_eta_w, 2)))))
     else:
         #k*pow(B_eta_w, 2) term missing when no compression on \tilde{w}_j0 done
-        beta_sis = RR(sqrt(4*d*pow(B_det, 2)+ 4*d*pow((kappa+1),2)*(pow(B_Gamma,2)*(pow(B_tilde_z, 2)+pow(B_tilde_r, 2)+pow(B_tilde_e, 2)))))
+        beta_sis = RR(sqrt(4*d*pow(B_det, 4)+ 4*d*pow((kappa+1),2)*pow(B_det,2)*(pow(B_Gamma,2)*(pow(B_tilde_z, 2)+pow(B_tilde_r, 2)+pow(B_tilde_e, 2)))))
 
     return beta_sis
 
@@ -604,7 +620,7 @@ def findDualMSParams(T, kappa, B, eta_s, eta_prime_s, t, logq_min, logq_max, RHF
         except:
             continue
         for logq in range(logq_min, logq_max):          
-            l = setLWERank(RHF_max, d, logq, B, uniform=False)
+            l = setLWERank(RHF_max, d, logq, B, uniform=True)
             if l == -1:
                 print("Skipping: no valid LWE rank found")
                 continue
@@ -619,7 +635,7 @@ def findDualMSParams(T, kappa, B, eta_s, eta_prime_s, t, logq_min, logq_max, RHF
             if(k*d > 8192):
                 print("Could not find parameters")
             print("Refining k...")
-            while(boolChecks):
+            while boolChecks and k > 0:
                 output_arr.append([d, logq, l, k, boolChecks])
                 k-=1
                 sis_bound = setDualMSMSISBounds(T, kappa, d, w, k, l, l_prime, eta_s, eta_prime_s, t, logq, phi, K_w0, compress_w)
@@ -628,7 +644,7 @@ def findDualMSParams(T, kappa, B, eta_s, eta_prime_s, t, logq_min, logq_max, RHF
 
 """------------------------------------------------------------------------------------------------------------------"""
 """DualMS (ASIS) functions"""
-def setDualMSASISBounds(T, kappa, d, w, k, l, l_prime, eta_s, eta_prime_s, t, logq, phi, K_w0, compress_w):
+def setDualMSASISBounds(T, kappa, d, w, k, l, l_prime, eta_s, eta_prime_s, t, logq, phi, K_w0, compress_w, t_inf=12):
     arr = []
 
     print("\n=== set DualMS ASIS bounds ===")
@@ -639,22 +655,26 @@ def setDualMSASISBounds(T, kappa, d, w, k, l, l_prime, eta_s, eta_prime_s, t, lo
     sigma_s =  ceil(RR(((2*d)/sqrt(2*pi))*pow(q, (k/(l+k)+2/(d*(l+k))))))
     sigma_s_prime = ceil(RR(((2*d)/sqrt(2*pi))*pow(q, (k/(l_prime+k)+2/(d*(l_prime+k))))))
 
+    print("t_inf  =", t_inf)
     print("log2(sigma_s)       =", log(sigma_s, 2))
     print("log2(sigma_s_prime) =", log(sigma_s_prime, 2))
 
     #Intermediate bounds
     B_zero = RR(sqrt(d*(l+k))*(eta_s*pow(w, kappa+1)+6*sigma_s*(kappa-1)*pow(w, kappa-1)))
     B_zero_prime = RR(sqrt(d*(l_prime+k))*(eta_prime_s*pow(w, kappa+1)+6*sigma_s_prime*(kappa-1)*pow(w, kappa-1)))
-    B_hat_0 = max(B_zero, B_zero_prime)
+    B_hat_0 = RR(sqrt(pow(B_zero, 2) + pow(B_zero_prime, 2)))
 
-    B_z = RR(t*phi*B_zero*sqrt(d*l))
-    B_tilde_z = RR(sqrt(T)*B_z)
+    #Gaussian widths of the AGGREGATED responses
+    sigma_tilde_z = RR(phi*B_zero*sqrt(T))
+    sigma_tilde_r = RR(phi*B_zero_prime*sqrt(T))
+    sigma_tilde_e = RR(phi*B_hat_0*sqrt(T))
 
-    B_r = RR(t*phi*B_zero_prime*sqrt(d*l_prime))
-    B_tilde_r = RR(sqrt(T)*B_r)
-
-    B_e = RR(t*phi*B_hat_0*sqrt(d*k))
-    B_tilde_e = RR(sqrt(T)*B_e)
+    #The AMSIS instance below is stated in the infinity norm, so it must be fed the
+    #ell_inf bounds that Vf actually checks -- not the ell_2 bounds. Using the ell_2
+    #bounds here hands the extractor a spurious factor of 1.2*sqrt(d*k) ~= 53.
+    B_tilde_z = RR(t_inf*sigma_tilde_z)
+    B_tilde_r = RR(t_inf*sigma_tilde_r)
+    B_tilde_e = RR(t_inf*sigma_tilde_e)
 
     B_det = RR(pow((2*w), kappa*(kappa+1)/2))
 
@@ -662,8 +682,8 @@ def setDualMSASISBounds(T, kappa, d, w, k, l, l_prime, eta_s, eta_prime_s, t, lo
 
     # --- ASIS infinity-norm buckets ---
     # 1) determinant/aggregation scalar term
-    #    ||det(Vx)(alpha_u - alpha'_u)||_inf <= 2 * B_det
-    B_alpha = RR(2 * B_det)
+    #    ||det(Vx)det(Vx')(alpha_u - alpha'_u)||_inf <= 2 * B_det^2
+    B_alpha = RR(2 * pow(B_det, 2))
     m_alpha = 1
     arr.append([B_alpha, m_alpha])
     print("log2(B_alpha) =", log(B_alpha, 2), "m_alpha =", m_alpha)
@@ -674,19 +694,19 @@ def setDualMSASISBounds(T, kappa, d, w, k, l, l_prime, eta_s, eta_prime_s, t, lo
     # 2) z-hat difference
     #    coefficientwise bound from ||ab||_inf <= ||a||_1 ||b||_inf
     #    and ||tilde_z||_inf <= ||tilde_z|| <= B_tilde_z
-    B_zhat = RR(2*(kappa + 1)*B_Gamma*B_tilde_z)
+    B_zhat = RR(2*(kappa + 1)*B_det*B_Gamma*B_tilde_z)
     m_zhat = l
     arr.append([B_zhat, m_zhat])
     print("log2(B_zhat)  =", log(B_zhat, 2), "m_zhat  =", m_zhat)
 
     # 3) r-hat difference
-    B_rhat = RR(2*(kappa + 1)*B_Gamma*B_tilde_r)
+    B_rhat = RR(2*(kappa + 1)*B_det*B_Gamma*B_tilde_r)
     m_rhat = l_prime
     arr.append([B_rhat, m_rhat])
     print("log2(B_rhat)  =", log(B_rhat, 2), "m_rhat  =", m_rhat)
 
     # 4) e-hat difference
-    B_ehat = RR(2*(kappa + 1)*B_Gamma*B_tilde_e)
+    B_ehat = RR(2*(kappa + 1)*B_det*B_Gamma*B_tilde_e)
     m_ehat = k
     arr.append([B_ehat, m_ehat])
     print("log2(B_ehat)  =", log(B_ehat, 2), "m_ehat  =", m_ehat)
@@ -695,7 +715,7 @@ def setDualMSASISBounds(T, kappa, d, w, k, l, l_prime, eta_s, eta_prime_s, t, lo
     if (compress_w):
     # 5) eta-hat_w difference
         B_eta_w = RR(pow(2,(K_w0 - 1)))
-        B_etahat = RR(2*(kappa + 1)*B_Gamma*B_eta_w)
+        B_etahat = RR(2*(kappa + 1)*B_det*B_Gamma*B_eta_w)
         m_etahat = k
         arr.append([B_etahat, m_etahat])
         print("log2(B_etahat) =", log(B_etahat, 2), "m_etahat =", m_etahat)
@@ -771,7 +791,7 @@ def findDualMSASISParams(T, kappa, B, eta_s, eta_prime_s, t, logq_min, logq_max,
             continue
 
         for logq in range(logq_min, logq_max):
-            l = setLWERank(RHF_max, d, logq, B, uniform=False)
+            l = setLWERank(RHF_max, d, logq, B, uniform=True)
             if l == -1:
                 print("Skipping: no valid LWE rank found")
                 continue
@@ -808,13 +828,13 @@ def calculate_sig_size(kappa, beta, n_hat, k_hat, k, l, l_prime, d, b_qhat, b_q,
     const = 4.13
     b2KB = pow(2,13) #Convert bits to bytes
 
-    size_B_bin_1 = n_hat*d*(b_qhat - K_b)
+    size_B_bin_1 = n_hat*d*(ceil(b_qhat) - K_b)
 
     #Only kappa = 1 case
     if (kappa == 1):
         size_w_0 = 0
     else:
-        size_w_0 = kappa*k*d*(b_q - K_w0)
+        size_w_0 = (kappa-1)*k*d*(ceil(b_q) - K_w0)
 
     size_f_1 = RR(kappa*(beta-1)*d*log(const*sigma_f,2))
     size_z_b = RR((n_hat+k_hat)*d*log(const*sigma_z_b,2))
@@ -823,13 +843,13 @@ def calculate_sig_size(kappa, beta, n_hat, k_hat, k, l, l_prime, d, b_qhat, b_q,
     size_tilde_e = RR(k*d*log(const*sigma_tilde_e,2))
 
     print("=== Parts of signature ===")
-    print("size_B_bin_1:", RR(size_B_bin_1/b2KB), "KB\n")
-    print("size_w_0:", RR(size_w_0/b2KB), "KB\n")
-    print("size_f_1:", RR(size_f_1/b2KB), "KB\n")
-    print("size_z_b:", RR(size_z_b/b2KB), "KB\n")
-    print("size_tilde_z:", RR(size_tilde_z/b2KB), "KB\n")
-    print("size_tilde_r:", RR(size_tilde_r/b2KB), "KB\n")
-    print("size_tilde_e:", RR(size_tilde_e/b2KB), "KB\n")
+    print("size_B_bin_1:", RR(size_B_bin_1/b2KB), "KiB\n")
+    print("size_w_0:", RR(size_w_0/b2KB), "KiB\n")
+    print("size_f_1:", RR(size_f_1/b2KB), "KiB\n")
+    print("size_z_b:", RR(size_z_b/b2KB), "KiB\n")
+    print("size_tilde_z:", RR(size_tilde_z/b2KB), "KiB\n")
+    print("size_tilde_r:", RR(size_tilde_r/b2KB), "KiB\n")
+    print("size_tilde_e:", RR(size_tilde_e/b2KB), "KiB\n")
 
     sig_size = size_B_bin_1 + size_w_0 + const_size_x + size_f_1 + size_z_b + size_tilde_z + size_tilde_r + size_tilde_e
     return RR(sig_size)
@@ -838,15 +858,15 @@ def calculate_sig_size(kappa, beta, n_hat, k_hat, k, l, l_prime, d, b_qhat, b_q,
 def number_reps(T, phi_a, phi_b, phi, nhat, d, w, K_a, K_b, K_w0, eps_total, compress_w):
 
     mu_a = exp(12/phi_a + 1/(2*pow(phi_a, 2)))
-    mu_b = exp(1/(2*pow(phi_b, 2)))
+    mu_b = exp(12/phi_b + 1/(2*pow(phi_b, 2)))
     mu = exp(12/phi + 1/(2*pow(phi, 2)))
     mu_BG = exp(nhat*d*((w*pow(2, K_b)-1)/pow(2, K_a)))
 
-    #There is in fact no repetition for the kappa = 1 case
-    if(compress_w):
-        mu_w = 1
-    else:
-        mu_w = 1
+    #mu_w = 1 is valid ONLY for kappa = 1: there hat{w}_0 = tilde{w}_0, so
+    #w-compression enforces no stability condition and adds no restart event.
+    #For kappa > 1 the Sign_bin check ||tilde{w}_0||_inf > 2^{K_w0-1} - M_w is a
+    #genuine restart factor that this function does not model.
+    mu_w = 1
 
     mu_fg = RR(1/(1-eps_total))
 
@@ -856,10 +876,25 @@ def number_reps(T, phi_a, phi_b, phi, nhat, d, w, K_a, K_b, K_w0, eps_total, com
 
 
 #Calculate the size of PK (structured ring)
-def calculate_PK(T, N, k, d, logq):
+#After the Section 4 revision PK = (R, Psi): R holds M <= T*N DISTINCT registered
+#keys and Psi is a column-injective cell labelling pi : [0,T-1]x[0,N-1] -> R.
+#Key material therefore scales with M, not T*N; the labelling costs T*N indices
+#of ceil(log2 M) bits on top.  M = T*N recovers the all-distinct case exactly
+#(the labelling is then the identity and costs nothing).
+def calculate_PK(T, N, k, d, logq, M=None):
+    if M is None:
+        M = T * N
+    if not T <= M <= T * N:
+        raise ValueError("column-injectivity requires T <= M <= T*N")
 
-    single_pk = k * d * logq
-    size_PK = T * N * single_pk
+    single_pk = k * d * ceil(logq)
+    size_keys = M * single_pk
+    size_labelling = 0 if M >= T*N else T * N * ceil(log(M, 2))
+    size_PK = size_keys + size_labelling
+
+    print("Distinct registered keys M =", M, "out of T*N =", T*N)
+    print("  key material  =", RR(size_keys/pow(2,13)), "KiB")
+    print("  labelling Psi =", RR(size_labelling/pow(2,13)), "KiB")
 
     return single_pk, size_PK
 """------------------------------------------------------------------------------------------------------------------"""
@@ -881,7 +916,7 @@ def main():
 
     #Rej sampling slack factors
     phi_a = 24
-    phi_b = 4
+    phi_b = 24
     phi = 22 * T
     mu_BG_target = RR(1.01)
 
@@ -889,12 +924,12 @@ def main():
     eps_total = RR(0.01)
 
     #Bin logqhat logq range to search over
-    logqhat_min = 33
-    logqhat_max = 36
+    logqhat_min = 35
+    logqhat_max = 45
 
     #DualMS logq range to search over
     logq_min = 35
-    logq_max = 40
+    logq_max = 45
 
     #Check whether to compress \tilde{w}_0
     compress_w = True
@@ -910,5 +945,4 @@ def main():
 
 if __name__ == "__main__":
     main()
-
 

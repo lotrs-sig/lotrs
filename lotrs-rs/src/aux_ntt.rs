@@ -458,22 +458,37 @@ impl CrtBackend {
         assert_eq!(m[0].len(), v.len());
 
         let v_ntt: Vec<CrtNttPoly> = v.iter().map(|p| self.to_ntt(p)).collect();
+        // Bound the entire accumulated integer coefficient before CRT.
+        // At q < 2^44 the two-prime backend has room for only three
+        // worst-case products at d=128. Split using public parameters;
+        // reducing each chunk modulo q keeps arbitrary matrix inputs exact.
+        let product_bound = self.d as u128 * (self.q as u128 / 2).pow(2);
+        let chunk_len = ((AUX_P / 2 - 1) / product_bound).min(usize::MAX as u128) as usize;
+        assert!(chunk_len > 0);
         let mut out = Vec::with_capacity(m.len());
         for row in m {
             assert_eq!(row.len(), v_ntt.len());
-            let mut acc1 = vec![0u64; self.d];
-            let mut acc2 = vec![0u64; self.d];
-            for (a, b) in row.iter().zip(v_ntt.iter()) {
-                for i in 0..self.d {
-                    let p1 = mul_mod_aux::<P1Marker>(a.c1[i], b.c1[i]);
-                    acc1[i] = add_mod_aux::<P1Marker>(acc1[i], p1);
-                    let p2 = mul_mod_aux::<P2Marker>(a.c2[i], b.c2[i]);
-                    acc2[i] = add_mod_aux::<P2Marker>(acc2[i], p2);
+            let mut sum = vec![0u64; self.d];
+            for (a_chunk, b_chunk) in row.chunks(chunk_len).zip(v_ntt.chunks(chunk_len)) {
+                let mut acc1 = vec![0u64; self.d];
+                let mut acc2 = vec![0u64; self.d];
+                for (a, b) in a_chunk.iter().zip(b_chunk) {
+                    for i in 0..self.d {
+                        let p1 = mul_mod_aux::<P1Marker>(a.c1[i], b.c1[i]);
+                        acc1[i] = add_mod_aux::<P1Marker>(acc1[i], p1);
+                        let p2 = mul_mod_aux::<P2Marker>(a.c2[i], b.c2[i]);
+                        acc2[i] = add_mod_aux::<P2Marker>(acc2[i], p2);
+                    }
+                }
+                self.ctx1.inverse_in_place(&mut acc1);
+                self.ctx2.inverse_in_place(&mut acc2);
+                for (acc, value) in sum.iter_mut().zip(self.crt_combine(&acc1, &acc2)) {
+                    let value = *acc + value;
+                    let mask = 0u64.wrapping_sub((value >= self.q) as u64);
+                    *acc = value.wrapping_sub(self.q & mask);
                 }
             }
-            self.ctx1.inverse_in_place(&mut acc1);
-            self.ctx2.inverse_in_place(&mut acc2);
-            out.push(self.crt_combine(&acc1, &acc2));
+            out.push(sum);
         }
         out
     }
@@ -621,6 +636,41 @@ mod tests {
                     assert_eq!(got, want, "d={}, q={}", d, q);
                 }
             }
+        }
+    }
+
+    #[test]
+    fn revised_parameter_matrix_products_match_scalar_products() {
+        use crate::params::PRODUCTION_PARAMS as PP;
+        let backend = CrtBackend::new(PP.q, PP.d).unwrap();
+        let mut random = rng(0x2026_0906);
+        for width in [PP.l, PP.l_prime] {
+            let matrix: Vec<Vec<Vec<u64>>> = (0..2)
+                .map(|_| {
+                    (0..width)
+                        .map(|_| (0..PP.d).map(|_| random(PP.q)).collect())
+                        .collect()
+                })
+                .collect();
+            let vector: Vec<Vec<u64>> = (0..width)
+                .map(|_| (0..PP.d).map(|_| random(PP.q)).collect())
+                .collect();
+            let expected: Vec<Vec<u64>> = matrix
+                .iter()
+                .map(|row| {
+                    let mut sum = vec![0; PP.d];
+                    for (a, b) in row.iter().zip(&vector) {
+                        for (acc, value) in sum.iter_mut().zip(schoolbook(a, b, PP.q)) {
+                            *acc = (*acc + value) % PP.q;
+                        }
+                    }
+                    sum
+                })
+                .collect();
+            assert_eq!(
+                backend.mat_vec_ntt(&backend.mat_to_ntt(&matrix), &vector),
+                expected
+            );
         }
     }
 

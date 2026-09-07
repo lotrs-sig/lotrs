@@ -37,15 +37,15 @@ The public API mirrors the protocol figures of the accompanying paper:
 
 | Paper            | Rust                                  |
 |------------------|---------------------------------------|
-| Fig. 4 `Setup`   | `LoTRS::setup`                        |
-| Fig. 4 `KGen`    | `LoTRS::keygen`                       |
-| Fig. 4 `KAgg`    | `LoTRS::kagg`                         |
-| Fig. 4 `Sign₁`   | `LoTRS::sign1`                        |
-| Fig. 4 `SAgg`    | `LoTRS::sagg`                         |
-| Fig. 5 `Sign₂`   | `LoTRS::sign2`                        |
+| Fig. 2 `Setup`   | `LoTRS::setup`                        |
+| Fig. 2 `KGen`    | `LoTRS::keygen`                       |
+| Fig. 2 `KAgg`    | `LoTRS::kagg`                         |
+| Fig. 3 `Sign₁`   | `LoTRS::sign1`                        |
+| Fig. 6 `SAgg`    | `LoTRS::sagg`                         |
+| Fig. 4 `Sign₂`   | `LoTRS::sign2`                        |
 | Fig. 5 `Sign_bin`| `LoTRS::sign_bin`                     |
-| Fig. 6 `Vf`      | `LoTRS::verify`                       |
-| Fig. 1 `Rej` / `RejOp` | `sample::rej` / `sample::rej_op`|
+| Fig. 7 `Vf`      | `LoTRS::verify`                       |
+| Fig. 8 `Rej` | `sample::rej` (including z_b) |
 | Table 2 bounds   | methods on `LoTRSParams`              |
 | Table 3 params   | `PRODUCTION_PARAMS`                   |
 
@@ -88,19 +88,13 @@ scripts/
   gen_sampler_kat.py Regenerates tests/sampler_kat.json.
 ```
 
-## Status
+## Coverage
 
-| Pass | Deliverable                                             | Status  |
-|------|---------------------------------------------------------|---------|
-| 1    | `params` + `aux_ntt` + `ring` + `sample` + `codec`      | done ✅  |
-| 2    | `lotrs::setup` / `keygen`, interop tests pp / sk / pk   | done ✅  |
-| 3    | `lotrs::verify` + signature codec                       | done ✅  |
-| 4    | CDT tables (TEST + `sigma_a` for `BENCH_4OF32` / `BENCH` / `PRODUCTION`) + generator | done ✅  |
-| 5    | `lotrs::sign` (two-round, rejection sampling)           | done ✅  |
-| 6    | FACCT-style large-sigma sampler + cross-language KAT    | done ✅  |
-| 7    | Signing at `BENCH` / `PRODUCTION`                       | done ✅  |
-| 8    | Constant-time hardening pass                            | partial: arithmetic hot paths hardened; signer not CT-audited |
-| 9    | Benchmarks (`examples/bench.rs`)                        | partial: benchmark tool exists; full grid refresh deferred |
+The implementation covers setup, key generation, aggregation, signing,
+verification, serialization, CRT-NTT arithmetic, and CDT/FACCT sampling.
+Tests cover deterministic Python interoperability, production signing,
+parameter consistency, and sampler fixtures. The benchmark harness ships
+with a complete 14-cell grid, data, and plots.
 
 ### Byte-for-byte interop vs `../lotrs-py/vectors.json`
 
@@ -117,14 +111,14 @@ bit-identically by the Rust code, under identical seeds:
 ### Constant-time considerations (status)
 
 The current implementation meets the **panic-free on any malformed input**
-contract for `verify()` and the public codec entry points.  It has also
-received a first arithmetic hardening pass:
+contract for `verify()` and the public codec entry points. Arithmetic
+uses the following protections:
 
 * `Ring::{add,sub,neg}` and the in-place variants use mask-style
   conditional reductions rather than coefficient-dependent branches.
 * Auxiliary-prime add/sub and pseudo-Mersenne final reduction use the
   same mask pattern.
-* CRT input splitting no longer branches on `c > q/2`; it maps the
+* CRT input splitting uses a mask for `c > q/2`; it maps the
   negative centered case to `c + p_i - q` under a mask.
 * CRT output centering and final non-negative reduction avoid
   branch-on-secret fixups.
@@ -139,10 +133,10 @@ still outstanding; the concentrated risk areas are all on the
    build: constant-time scan (linear or bit-sliced tournament) over the
    full table.  Cost scales with table length — tolerable for
    `sigma_a`, `sigma_b` (≤ ~20k entries); impractical at
-   `sigma_0 ≈ 26M`, which is another reason a different sampler is
+   `sigma_0 ≈ 70M`, which is another reason a different sampler is
    needed at `BENCH` / `PRODUCTION` (see below).
 2. **FACCT / rejection sampling** — FACCT proposals, Bernoulli
-   accept/reject tests, and `rej` / `rej_op` all have data-dependent
+   accept/reject tests, and `rej` has data-dependent
    loop counts or branches.  Some accept / reject outcomes are already
    externally visible as signing restarts, but this is still not a
    constant-time sampler.
@@ -196,14 +190,14 @@ every entry byte-for-byte.  Covers:
 
 * forced-FACCT at moderate sigma (CDT and FACCT would both work
   there, so we can compare)
-* FACCT at `sigma ≈ 8.5 × 10⁶` (large-sigma regime — between
-  `BENCH_4OF32` σ₀ ≈ 3.9 × 10⁶ and `BENCH_PARAMS` σ₀ ≈ 1.6 × 10⁷
-  under v1.5; fixed KAT point chosen to exercise the same code path)
+* FACCT at a fixed large-sigma point, `sigma ≈ 8.5 × 10⁶`;
+  the production-lattice signature fixture additionally exercises the
+  current masking widths near `7 × 10⁷`
 * CDT at small sigma
 
 **BENCH / PRODUCTION end-to-end** signing + verification works
 (see the `#[ignore]`d `bench_and_production_signing_round_trip`
-test; ~1 min per signature in release mode).
+test; includes construction of the full public-key table).
 
 Regenerate the CDT tables or KAT with
 
@@ -266,7 +260,7 @@ cargo run --release --example bench -- \
 
 The reproducible-grid command above completes in ≈ **15 minutes** on
 the hardware below; it produces the table shown under
-[Grid results](#grid-results) and corresponds to the captured data in
+[Benchmark parameters and results](#benchmark-parameters-and-results) and corresponds to the captured data in
 [`bench-out/`](bench-out/).
 
 ### Plotting bench output
@@ -296,7 +290,7 @@ Outputs land alongside the input file:
 
 | file | content |
 |---|---|
-| `data.csv`              | one row per `(N, T)` cell with every timing column + every byte size |
+| `data.csv`              | one row per `(N, T)` cell; timings and sizes parsed at report precision |
 | `sign-vs-T.pdf`         | log-log Sign / Verify time vs threshold `T`, one line per `N` (threshold rows only) |
 | `breakdown-vs-T.pdf`    | Sign decomposition: total / DualMS / RS sub-times vs `T` |
 | `sigsize-vs-T.pdf`      | signature size (KiB) vs `T` (threshold rows only) |
@@ -312,149 +306,57 @@ output tables (`Primitive timings` / `Sign / Verify breakdown` /
 `Key / signature sizes`), the regexes at the top of `plot_bench.py`
 must be updated to match.
 
-### Parameters used for the numbers below
+### Benchmark parameters and results
 
-All rows use the `d=128` lattice from `estimator/lotrs_estimate.py`
-(v1.5 / 2026-05-15 revision):
+All grid cells use the lattice in [`../parameters.json`](../parameters.json):
 
 ```
-κ = 1,  k = 12,  l = 5,  l' = 6,  n̂ = 11,  k̂ = 8,  w = 31,  η = 1
-q     = 274877906837   (largest prime < 2^38 with q     ≡ 5 mod 8)
-q_hat = 274877906837   (largest prime < 2^38 with q_hat ≡ 5 mod 8)
-φ_a = 24,  φ_b = 4,  φ = 22·T       (rejection-sampling slack)
-K_A = 28,  K_B = 5,  K_w = 5,  ε_tot = 0.01
-mask_sampler = FACCT,  tail_t = 1.2
+d = 128, κ = 1, k = 14, l = 20, l' = 21, n̂ = 12, k̂ = 11
+q = 8796093022141, q_hat = 34359737917, w = 31, η = η' = 1
+φ_a = φ_b = 24, φ = max(22·T,1100)
+K_A = 28, K_B = K_w = 5, ε_tot = 0.01
+mask_sampler = FACCT, tail_t = 1.2, tail_inf = 12
 ```
 
-`N = β^κ = β` (κ = 1), so only `N`, `T`, and `φ = 22·T` vary across
-rows; everything else is fixed.
+`N = β` at `κ = 1`. Only `N` and `T` vary over the 14-cell grid;
+all listed thresholds retain `φ = 1100`.
 
-### Methodology
+| N | T | Sign mean | Verify mean | KAgg | Signature |
+|---:|---:|---:|---:|---:|---:|
+| 32 | 4 | 97.81 ms | 33.95 ms | 7.17 ms | 41.90 KiB |
+| 32 | 16 | 151.4 ms | 54.56 ms | 25.76 ms | 42.72 KiB |
+| 100 | 5 | 226.0 ms | 76.56 ms | 24.10 ms | 51.97 KiB |
+| 100 | 50 | 923.6 ms | 311.0 ms | 224.2 ms | 53.53 KiB |
 
-**Sign** and **Verify** are arithmetic means over **N = 100 signing
-seeds per cell**, uniform across the grid.  Samples are
-**interleaved across cells**: one sample of every cell, then the
-next, and so on — so that any time-varying nuisance (CPU frequency
-/ thermal scaling, scheduler load) averages into every cell equally
-rather than concentrating in whichever cell happened to run during
-the disturbance.  The rejection-sampling attempt count per signing
-call is geometrically distributed; the estimator heuristic under
-v1.5 predicts `μ_total ≈ 3.0` accepted-attempt mean (down from ≈
-12.3 under v1.0).  Empirical means run around 6 because the
-implementation also restarts on the additional `w̃₀`-stability
-check used by the κ=1 commitment-compression path.  Per-attempt
-sign cost is the more parameter-stable indicator.  At `N = 100` and
-geometric CV ≈ √(1 − 1/μ) ≈ 0.9, the per-cell standard error on
-`Sign` is ≈ 9 %.
+See [`bench-out/README.md`](bench-out/README.md) for hardware, sample
+counts, timing variation, and reproduction guidance. The
+[raw report](bench-out/grid-d128.md), [CSV](bench-out/data.csv), and
+[summary](bench-out/summary.md) cover all threshold, `T=1`, and `N=1`
+cells. The five plots listed above are generated from that report.
 
-**KeyGen** and **KAgg** are single-run (deterministic given `pp` / PK).
+Each cell has 100 signing seeds and 100 verification calls. Verification
+repeats the final signature in each cell; key generation averages four
+calls, and key aggregation is measured once. Wire sizes are reported for
+the final signature. The CSV preserves the report's display precision,
+so its byte columns are rounded, not exact encoded lengths.
 
-### Hardware / toolchain
+At N=100, T=50, the observed mean is 5.28 attempts, with standard error
+0.50; the estimator heuristic is 4.7728. Ordinary `Rej` handles every
+response, including `z_b`. The commitment-stability check contributes
+no restarts at `kappa=1`.
 
-* **CPU**: AMD Ryzen AI 9 HX 370 (Zen 5, 12 cores / 24 threads,
-  5.1 GHz max boost)
-* **OS**: Debian forky/sid (`Linux 6.19.13-1 amd64`)
-* **Toolchain**: `rustc 1.95.0`, release build, `rayon`
-  multi-threaded across all 24 hardware threads
-
-The reference implementation parallelises the per-signer round-1 /
-round-2 loops and the verifier `kagg`/`pk_sum` reductions with
-`rayon`.  The CRT-NTT transforms of the public matrices `A`, `G`,
-`B` are amortised once per signing call.
-
-### Grid results
-
-Single grid covering both ring sizes (N = 32, 100) with the same
-`d = 128` lattice, plus standalone RS (T=1) and DualMS (N=1) sweeps.
-Captured in
-[`bench-out/grid-d128.md`](bench-out/grid-d128.md) (raw report),
-[`bench-out/data.csv`](bench-out/data.csv),
-[`bench-out/summary.md`](bench-out/summary.md), and the five paper
-plots: [`sign-vs-T.pdf`](bench-out/sign-vs-T.pdf),
-[`sigsize-vs-T.pdf`](bench-out/sigsize-vs-T.pdf),
-[`breakdown-vs-T.pdf`](bench-out/breakdown-vs-T.pdf),
-[`rs-alone-vs-N.pdf`](bench-out/rs-alone-vs-N.pdf),
-[`dualms-alone-vs-T.pdf`](bench-out/dualms-alone-vs-T.pdf).
-
-|   N |  T | Sign       | Verify   | KAgg     |  signature  | single pk |  ring PK   |
-|  -: | -: | -:         | -:       | -:       |   -:        |   -:      |    -:      |
-|  32 |  4 |  119.6 ms  |  25.5 ms |   9.8 ms |  23.89 KiB  | 7.12 KiB  | 0.89 MiB   |
-|  32 |  8 |  142.7 ms  |  31.0 ms |  16.2 ms |  24.34 KiB  | 7.12 KiB  | 1.78 MiB   |
-|  32 | 16 |  149.1 ms  |  43.2 ms |  31.6 ms |  24.98 KiB  | 7.12 KiB  | 3.56 MiB   |
-|  32 | 32 |  282.2 ms  |  66.0 ms |  51.6 ms |  25.42 KiB  | 7.12 KiB  | 7.12 MiB   |
-| 100 |  5 |  417.2 ms  |  60.1 ms |  22.9 ms |  34.01 KiB  | 7.12 KiB  | 3.48 MiB   |
-| 100 | 10 |  441.8 ms  |  81.4 ms |  43.0 ms |  34.64 KiB  | 7.12 KiB  | 6.96 MiB   |
-| 100 | 25 |  567.4 ms  | 145.2 ms | 103.2 ms |  35.36 KiB  | 7.12 KiB  | 17.40 MiB  |
-| 100 | 50 | **788.5 ms** | **250.0 ms** | **198.3 ms** | **35.79 KiB** | 7.12 KiB | 34.79 MiB |
-
-The `(N, T) = (100, 50)` row is Table 3 of the paper (= the
-`PRODUCTION_PARAMS` preset). The four `(32, *)` rows include the
-named `BENCH_4OF32` (T=4) and `BENCH_PARAMS` (T=16) presets used by
-the regression suite. Total grid wall-clock ≈ 8 minutes on the
-hardware listed above.
-
-`KeyGen` sits at ~1.6 ms across every row (independent of `N`, `T`).
-`KAgg` scales as `N·T` (deterministic, single-run): 5000 pk products
-at `(100, 50)` → 198 ms. `pk` is 7.125 KiB in every row; the
-`N·T·pk` ring-PK table scales accordingly. Sign time grows
-near-linearly in `T` at fixed `N` and grows by roughly the `N` ratio
-at fixed `T` (compare `(32, T)` vs `(100, T)` rows).
-
-Implementation note: the structured PK table is pre-hashed once as a
-256-bit SHAKE128 digest before the protocol-specific hash calls. The
-digest, not the full table serialization, is then fed to `H_agg`,
-`H_com`, and the Fiat-Shamir hash. This keeps the transcript bound to
-the full PK table while avoiding repeated hashing of the multi-MiB
-`N·T·pk` input.
-
-Signature size grows only ~6 % from T=5 to T=50 at fixed `N` — the
-T-dependent component is small versus the binary-proof / `B_bin`
-terms, which scale with `N`.
+A single public key occupies 9,632 bytes (9.40625 KiB); the complete
+N=100, T=50 table occupies 47,031.25 KiB. The analytic signature estimate
+is 52.6574 KiB, compared with the measured 53.53 KiB wire size. See
+[`../estimator/README.md`](../estimator/README.md) for the encoding model
+and security-estimation limits.
 
 ### Smoke-test presets
 
-For quick regression runs without the full grid, the named
-parameter sets `BENCH_4OF32` (T=4, N=32), `BENCH_PARAMS` (T=16, N=32),
-and `PRODUCTION_PARAMS` (T=50, N=100) reproduce three rows of the
-grid above:
+The named `BENCH_4OF32` (N=32, T=4), `BENCH_PARAMS` (N=32, T=16),
+and `PRODUCTION_PARAMS` (N=100, T=50) presets provide a smaller run:
 
 ```bash
-cargo run --release --example bench -- --skip-test            # 4-of-32 + 16-of-32 (< 1 min)
-cargo run --release --example bench -- --skip-test --with-prod # + 50-of-100 (~ 5 min)
+cargo run --release --example bench -- --skip-test
+cargo run --release --example bench -- --skip-test --with-prod
 ```
-
-The `BENCH_PARAMS` (16-of-32) row is the canonical small-bench point.
-
-Observations:
-
-* **KeyGen** is independent of `N` and `T` — it's one `mat_vec`
-  `A·s` in `R_q` at fixed `(k, l)`.  The ~1 ms baseline sits where
-  you'd expect for `k·(l+k) = 12·17 = 204` ring multiplications at
-  `d=128`.
-* **KAgg** computes `pk_hash = H(PK)` once, then runs `T` small
-  `hash_agg(pk_hash, u)` calls plus `N·T` ring mul-adds. The dominant
-  deterministic cost is therefore the `N·T` arithmetic, not repeated
-  hashing of the full PK table.
-* **Sign** is dominated by rejection-sampling attempts.  The
-  estimator's `μ_total = μ·μ_a·μ_b·μ_BG·μ_fg ≈ 3.0` under v1.5 is
-  the multiplicative restart factor of the four samplers and is
-  roughly constant across `T` because `φ = 22·T` holds `μ^T`
-  constant.  The implementation also restarts on the additional
-  `w̃₀`-stability check, so the empirical mean attempt count is in
-  the 6–7 range across all cells in the current grid (see the
-  `att.` column of `data.csv`).  Per-attempt cost scales
-  ~linearly in `T·N` for the signer / kagg / sign_bin loops.
-* **Verify** tracks `kagg` closely — the bulk of the verifier cost
-  is the same `N·T` product.
-* **Signature size** grows as `√T` at fixed `N` (Rice-coded
-  `z̃`, `r̃`, `ẽ` have widths `∝ √T·σ₀`).  Moving from `N=25` to
-  `N=100` at fixed `T` adds ~55% because `f_1` carries
-  `N·(β−1)·d` = `N·(N−1)·d` coefficients (quadratic in `N`).
-* **pk** is the same 7.125 KiB everywhere — a `k`-poly vector in
-  `R_q` at `d=128, k=12, log q = 38`, giving
-  `k·d·⌈log₂ q⌉ / 8 = 12·128·38/8 = 7.125 KiB`.
-* Sizes agree with the `estimator/lotrs_estimate.py` per-component
-  totals to within codec overhead.  Under v1.5 the estimator
-  predicts 35.06 KB at `(N, T) = (100, 50)`; the codec emits 35.79
-  KiB.  The small surplus is the Golomb-Rice header / per-stream
-  parameter overhead, which the estimator ignores.

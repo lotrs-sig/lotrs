@@ -12,6 +12,7 @@
 //! once in [`LoTRS::try_new`] from the explicit `mask_sampler` field on
 //! [`LoTRSParams`] — there is no runtime threshold dispatch.
 
+use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
 use rayon::prelude::*;
@@ -21,8 +22,8 @@ use crate::codec::{LoTRSCodec, Proof as _Proof, Signature, FS_CHALLENGE_BYTES};
 use crate::params::{LoTRSParams, MaskSamplerKind};
 use crate::ring::{NttPolyMat, Poly, PolyMat, PolyVec, Ring};
 use crate::sample::{
-    prepare_facct, rej, rej_op, xof_sample_challenge, xof_sample_gaussian,
-    xof_sample_gaussian_facct, xof_sample_short, xof_sample_uniform, FacctParams, Tag, Xof,
+    prepare_facct, rej, xof_sample_challenge, xof_sample_gaussian, xof_sample_gaussian_facct,
+    xof_sample_short, xof_sample_uniform, FacctParams, Tag, Xof,
 };
 
 /// Wall-clock breakdown for a successful [`LoTRS::sign_with_timings`] call.
@@ -625,6 +626,10 @@ impl LoTRS {
         let rq = &self.r_q;
         let rqh = &self.r_qhat;
 
+        if !self.valid_pk_table(pk_table) {
+            return Err(());
+        }
+
         // --- norm bounds on f1, z_b ------------------------------------
         // Binary-proof bucket.  Bound comparisons mirror Python's
         // `int > float` semantics so we stay on the float side.  f0
@@ -646,26 +651,9 @@ impl LoTRS {
         }
         timings.verify_bin += bin_t0.elapsed();
 
-        // --- norm bounds on z_tilde, r_tilde, e_tilde (l2) -------------
-        // DualMS bucket.  Use the triangle bound for e_u = z''_u + r''_u:
-        // width sigma_0 + sigma_0'. This is intentionally looser than the
-        // compact max-width expression and admits honest signatures with
-        // comfortable slack.
+        // Aggregate l2 and coefficientwise bounds (September verifier).
         let dm_t0 = Instant::now();
-        let t = par.tail_t;
-        let b_z_sq = (par.sigma_0() * t).powi(2) * (par.T * par.d * par.l) as f64;
-        let b_r_sq = (par.sigma_0_prime() * t).powi(2) * (par.T * par.d * par.l_prime) as f64;
-        let b_e_sq =
-            ((par.sigma_0() + par.sigma_0_prime()) * t).powi(2) * (par.T * par.d * par.k) as f64;
-        if (rq.vec_l2_norm_sq(&sig.z_tilde) as f64) > b_z_sq {
-            timings.verify_dualms += dm_t0.elapsed();
-            return Err(());
-        }
-        if (rq.vec_l2_norm_sq(&sig.r_tilde) as f64) > b_r_sq {
-            timings.verify_dualms += dm_t0.elapsed();
-            return Err(());
-        }
-        if (rq.vec_l2_norm_sq(&sig.e_tilde) as f64) > b_e_sq {
+        if !self.aggregate_norms_ok(sig) {
             timings.verify_dualms += dm_t0.elapsed();
             return Err(());
         }
@@ -840,13 +828,7 @@ impl LoTRS {
             w_hi_for_hash.push(j_vec.clone());
         }
 
-        let c_check = self.hash_fs_seed(
-            mu,
-            &a_hat_hi,
-            &sig.pi.b_bin_hi,
-            &w_hi_for_hash,
-            &pk_hash,
-        );
+        let c_check = self.hash_fs_seed(mu, &a_hat_hi, &sig.pi.b_bin_hi, &w_hi_for_hash, &pk_hash);
         timings.verify_dualms += dm_t0.elapsed();
 
         if c_check.as_slice() == sig.pi.x_seed.as_slice() {
@@ -952,6 +934,7 @@ impl LoTRS {
         ell: usize,
         pk_table: &[Vec<Vec<Poly>>],
         rho: &[u8; 32],
+        local_seed: &[u8; 32],
         attempt: u32,
         p_coeffs: &[Vec<Poly>],
     ) -> (Sign1State, Vec<PolyVec>) {
@@ -969,7 +952,7 @@ impl LoTRS {
         let mut r_list: Vec<PolyVec> = Vec::with_capacity(kappa);
         for j in 0..kappa {
             let mut xof_y = Xof::new(
-                rho,
+                local_seed,
                 &[
                     Tag::Bytes(b"y"),
                     Tag::Int(row_u as u32),
@@ -989,7 +972,7 @@ impl LoTRS {
             y_list.push(y_j);
 
             let mut xof_r = Xof::new(
-                rho,
+                local_seed,
                 &[
                     Tag::Bytes(b"r"),
                     Tag::Int(row_u as u32),
@@ -1040,6 +1023,7 @@ impl LoTRS {
             y_list,
             r_list,
             rho: *rho,
+            local_seed: *local_seed,
             attempt,
             row_u,
         };
@@ -1159,7 +1143,7 @@ impl LoTRS {
                 let z_u_signed: Vec<i64> = flatten_centered(rq, &z_u);
                 let shift_signed: Vec<i64> = flatten_centered(rq, &shift);
                 let mut xof_rej = Xof::new(
-                    &state.rho,
+                    &state.local_seed,
                     &[
                         Tag::Bytes(b"rej_z"),
                         Tag::Int(state.row_u as u32),
@@ -1303,16 +1287,16 @@ impl LoTRS {
         let x = self.expand_fs_challenge(&x_seed);
 
         // z_b = r_a + x * r_b; the same `x · r_b` term is also the
-        // shift `v` for the rej_op rejection check, so compute once.
+        // shift `v` for the Rej rejection check, so compute once.
         let x_hat = rqh.from_centered(&rq.centered(&x));
         let x_rb = rqh.vec_scale(&x_hat, &r_b);
         let z_b = rqh.vec_add(&r_a, &x_rb);
 
-        // RejOp on z_b
+        // Rej on z_b
         let z_b_signed = flatten_centered(rqh, &z_b);
         let v_signed = flatten_centered(rqh, &x_rb);
         let mut xof_rej_b = Xof::new(rho, &[Tag::Bytes(b"rej_b"), Tag::Int(attempt)]);
-        if !rej_op(&mut xof_rej_b, &z_b_signed, &v_signed, par.phi_b, par.B_b()) {
+        if !rej(&mut xof_rej_b, &z_b_signed, &v_signed, par.phi_b, par.B_b()) {
             return None;
         }
 
@@ -1546,8 +1530,8 @@ impl LoTRS {
         if signing_seed.len() != 32 {
             return Err("signing_seed must be 32 bytes");
         }
-        if pk_table.len() != par.N() {
-            return Err("pk_table has wrong N");
+        if !self.valid_pk_table(pk_table) {
+            return Err("PK must have N columns of T distinct canonical keys");
         }
 
         // Expand every pp/μ/PK-dependent structure once — reused across
@@ -1571,11 +1555,20 @@ impl LoTRS {
         };
 
         let mut timings = SignTimings::default();
+        // Centralized reproducibility harness: the master signing seed
+        // produces independent shared and signer-private session streams.
+        // A distributed implementation supplies private seeds locally and
+        // shares only rho. Each seed remains fixed across restart counters.
+        let rho = Xof::new(signing_seed, &[Tag::Bytes(b"rho")]).read_array::<32>();
+        let local_seeds: Vec<[u8; 32]> = (0..par.T)
+            .map(|u| {
+                Xof::new(signing_seed, &[Tag::Bytes(b"local"), Tag::Int(u as u32)])
+                    .read_array::<32>()
+            })
+            .collect();
 
         for attempt in 0..par.max_attempts {
             timings.attempts = timings.attempts.saturating_add(1);
-            let mut rho_xof = Xof::new(signing_seed, &[Tag::Bytes(b"rho"), Tag::Int(attempt)]);
-            let rho = rho_xof.read_array::<32>();
 
             // Per-attempt deterministic expansion of (rho, attempt, ell).
             // Identical across all T signers, so hoisted out of the T-loop.
@@ -1585,14 +1578,26 @@ impl LoTRS {
             // round 1 — T independent calls; parallelized over signers
             // via rayon.  All shared inputs (ctx, pk_table, rho, p_coeffs)
             // are borrowed immutably; each sign1 builds its own XOFs
-            // from `(rho, tag, u, attempt)` so there is no cross-signer
+            // from `(local_seed[u], tag, u, attempt)` for private masks,
+            // with shared expansions under rho, so there is no cross-signer
             // state.  `collect()` preserves the (0..T) order, so the
             // resulting `states` / `all_coms` are byte-identical to the
             // serial version.
             let r1_t0 = Instant::now();
             let (states, all_coms): (Vec<Sign1State>, Vec<Vec<PolyVec>>) = (0..par.T)
                 .into_par_iter()
-                .map(|u| self.sign1(&ctx, u, ell, pk_table, &rho, attempt, &p_coeffs))
+                .map(|u| {
+                    self.sign1(
+                        &ctx,
+                        u,
+                        ell,
+                        pk_table,
+                        &rho,
+                        &local_seeds[u],
+                        attempt,
+                        &p_coeffs,
+                    )
+                })
                 .unzip();
             timings.sign1 += r1_t0.elapsed();
 
@@ -1603,15 +1608,8 @@ impl LoTRS {
             // round-2 wall-clock lands in `sign2_rest` after subtraction.
             let r2_t0 = Instant::now();
             let mut bin_acc = Duration::ZERO;
-            let sigmas = self.sign2_round(
-                &ctx,
-                &states,
-                sks,
-                mu,
-                &all_coms,
-                &a_coeffs,
-                &mut bin_acc,
-            );
+            let sigmas =
+                self.sign2_round(&ctx, &states, sks, mu, &all_coms, &a_coeffs, &mut bin_acc);
             let r2_total = r2_t0.elapsed();
             timings.sign_bin += bin_acc;
             timings.sign2_rest += r2_total.saturating_sub(bin_acc);
@@ -1622,7 +1620,11 @@ impl LoTRS {
 
             let agg_t0 = Instant::now();
             let sig = self.sagg(&sigmas).ok_or("sagg failed")?;
+            let norms_ok = self.aggregate_norms_ok(&sig);
             timings.sagg += agg_t0.elapsed();
+            if !norms_ok {
+                continue;
+            }
 
             let bytes = self
                 .codec
@@ -1632,6 +1634,43 @@ impl LoTRS {
         }
 
         Err("signing failed after max_attempts")
+    }
+
+    /// Bounds shared by the verifier and the final signing restart.
+    fn aggregate_norms_ok(&self, sig: &Signature) -> bool {
+        let p = &self.par;
+        [
+            (&sig.z_tilde, p.B_tilde_z(), p.B_tilde_z_inf()),
+            (&sig.r_tilde, p.B_tilde_r(), p.B_tilde_r_inf()),
+            (&sig.e_tilde, p.B_tilde_e(), p.B_tilde_e_inf()),
+        ]
+        .iter()
+        .all(|(v, l2, inf)| {
+            (self.r_q.vec_l2_norm_sq(v) as f64) <= l2 * l2
+                && (self.r_q.vec_inf_norm(v) as f64) <= *inf
+        })
+    }
+
+    /// Validate canonical public keys and the paper's column-injectivity
+    /// condition. Reusing a key in different columns is permitted.
+    fn valid_pk_table(&self, pk_table: &[Vec<Vec<Poly>>]) -> bool {
+        let par = &self.par;
+        if pk_table.len() != par.N() {
+            return false;
+        }
+        pk_table.iter().all(|col| {
+            if col.len() != par.T {
+                return false;
+            }
+            let mut seen = HashSet::with_capacity(par.T);
+            col.iter().all(|pk| {
+                pk.len() == par.k
+                    && pk
+                        .iter()
+                        .all(|poly| poly.len() == par.d && poly.iter().all(|&c| c < par.q))
+                    && seen.insert(pk)
+            })
+        })
     }
 }
 
@@ -1649,6 +1688,7 @@ struct Sign1State {
     y_list: Vec<PolyVec>,
     r_list: Vec<PolyVec>,
     rho: [u8; 32],
+    local_seed: [u8; 32],
     attempt: u32,
     row_u: usize,
 }
@@ -1807,6 +1847,78 @@ pub fn verify(
 mod tests {
     use super::*;
     use crate::params::TEST_PARAMS;
+
+    #[test]
+    fn aggregate_infinity_and_l2_bounds() {
+        let p = TEST_PARAMS;
+        let scheme = LoTRS::new(p);
+        let mut sig = Signature {
+            pi: Proof {
+                b_bin_hi: vec![],
+                w_tilde_hi: vec![],
+                x_seed: vec![],
+                x: vec![],
+                f1: vec![],
+                z_b: vec![],
+            },
+            z_tilde: vec![vec![0; p.d]; p.l],
+            r_tilde: vec![vec![0; p.d]; p.l_prime],
+            e_tilde: vec![vec![0; p.d]; p.k],
+        };
+        for (index, width, inf, l2) in [
+            (0, p.sigma_tilde_z(), p.B_tilde_z_inf(), p.B_tilde_z()),
+            (1, p.sigma_tilde_r(), p.B_tilde_r_inf(), p.B_tilde_r()),
+            (2, p.sigma_tilde_e(), p.B_tilde_e_inf(), p.B_tilde_e()),
+        ] {
+            fn component(s: &mut Signature, index: usize) -> &mut Vec<Vec<u64>> {
+                match index {
+                    0 => &mut s.z_tilde,
+                    1 => &mut s.r_tilde,
+                    _ => &mut s.e_tilde,
+                }
+            }
+            for negative in [false, true] {
+                let edge = inf.floor() as u64;
+                component(&mut sig, index)[0][0] = if negative { p.q - edge } else { edge };
+                assert!(scheme.aggregate_norms_ok(&sig));
+                assert!(((edge + 1) as f64) < l2);
+                component(&mut sig, index)[0][0] = if negative { p.q - edge - 1 } else { edge + 1 };
+                assert!(!scheme.aggregate_norms_ok(&sig));
+            }
+            // A dense vector passes the infinity bound but exceeds l2.
+            let coeff = (p.tail_t * width).floor() as u64 + 1;
+            assert!((coeff as f64) < inf);
+            for poly in component(&mut sig, index).iter_mut() {
+                poly.fill(coeff);
+            }
+            assert!(!scheme.aggregate_norms_ok(&sig));
+            for poly in component(&mut sig, index).iter_mut() {
+                poly.fill(0);
+            }
+        }
+    }
+
+    #[test]
+    fn pk_table_column_injectivity() {
+        let scheme = LoTRS::new(TEST_PARAMS);
+        let pp = scheme.setup(&[0; 32]);
+        let (_, pk0) = scheme.keygen(&pp, &[1; 32]);
+        let (_, pk1) = scheme.keygen(&pp, &[2; 32]);
+        let valid = vec![vec![pk0.clone(), pk1]; TEST_PARAMS.N()];
+        assert!(scheme.valid_pk_table(&valid));
+        let repeated_rows = vec![vec![pk0; TEST_PARAMS.T]; TEST_PARAMS.N()];
+        assert!(!scheme.valid_pk_table(&repeated_rows));
+        assert!(scheme
+            .sign(
+                &pp,
+                &vec![vec![]; TEST_PARAMS.T],
+                0,
+                b"invalid table",
+                &repeated_rows,
+                &[3; 32]
+            )
+            .is_err());
+    }
 
     #[test]
     fn keygen_public_key_shape() {

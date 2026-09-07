@@ -26,7 +26,7 @@ build/
 
 # Rust
 lemur-rs/target/
-Cargo.lock
+lotrs-rs/target/
 **/*.rs.bk
 
 # Editor / OS

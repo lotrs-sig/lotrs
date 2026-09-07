@@ -93,11 +93,45 @@ def test_sign1_determinism():
     pp, pk_table, all_sks = _make_ring(par)
     ell = 0
     rho = b"\xDD" * 32
+    local_seed = b"\xEE" * 32
     st1, com1 = scheme.sign1(
-        pp, all_sks[ell][0], 0, ell, b"msg", pk_table, rho, 0)
+        pp, all_sks[ell][0], 0, ell, b"msg", pk_table, rho, 0, local_seed)
     st2, com2 = scheme.sign1(
-        pp, all_sks[ell][0], 0, ell, b"msg", pk_table, rho, 0)
+        pp, all_sks[ell][0], 0, ell, b"msg", pk_table, rho, 0, local_seed)
     assert com1 == com2
+
+
+def test_sign1_private_session_randomness():
+    """Shared proof randomness does not determine a signer's local masks."""
+    scheme = _get_scheme()
+    pp, table, sks = _make_ring(TEST_PARAMS)
+    rho = b"\xDD" * 32
+    args = (pp, sks[0][0], 0, 0, b"private masks", table, rho, 0)
+    first, com1 = scheme.sign1(*args, b"\x11" * 32)
+    second, com2 = scheme.sign1(*args, b"\x22" * 32)
+    assert first["rho"] == second["rho"]
+    assert first["y_list"] != second["y_list"]
+    assert first["r_list"] != second["r_list"]
+    assert com1 != com2
+
+
+def test_pk_table_column_injectivity():
+    """Distinct keys are required within columns; cross-column reuse is valid."""
+    scheme = _get_scheme()
+    pp, table, _ = _make_ring(TEST_PARAMS)
+    assert scheme._valid_pk_table(table)
+    repeated_columns = [table[0] for _ in range(TEST_PARAMS.N)]
+    assert scheme._valid_pk_table(repeated_columns)
+    repeated_rows = [[col[0]] * TEST_PARAMS.T for col in table]
+    assert not scheme._valid_pk_table(repeated_rows)
+    assert not scheme.verify(pp, b"invalid table", {}, repeated_rows)
+    try:
+        scheme.sign(pp, [None] * TEST_PARAMS.T, 0, b"invalid table",
+                    repeated_rows, b"\x33" * 32)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("sign must validate the table before using keys")
 
 
 # ===========================================================================

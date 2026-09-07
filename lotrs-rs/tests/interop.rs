@@ -5,9 +5,8 @@
 //! matches byte-for-byte.  This test is the real guarantor of
 //! test-vector compatibility.
 //!
-//! The integration test is skipped gracefully if the vectors file is
-//! missing (so that a fresh checkout doesn't fail `cargo test` before
-//! the user has generated the file).
+//! The shipped vector fixture is required: missing or malformed vectors
+//! fail the artifact conformance check.
 
 use std::fs;
 use std::path::PathBuf;
@@ -48,37 +47,19 @@ struct SigEntry {
     byte_length: usize,
 }
 
-fn vectors_path() -> Option<PathBuf> {
-    // `CARGO_MANIFEST_DIR` is set to lotrs-rs/ when running tests.
-    let here = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let p = here.parent()?.join("lotrs-py").join("vectors.json");
-    if p.exists() {
-        Some(p)
-    } else {
-        None
-    }
-}
-
-fn load_vectors() -> Option<Vectors> {
-    let p = vectors_path()?;
-    let raw = fs::read_to_string(p).ok()?;
-    serde_json::from_str(&raw).ok()
+fn load_vectors() -> Vectors {
+    let p = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../lotrs-py/vectors.json");
+    let raw = fs::read_to_string(p).expect("required Python vectors.json fixture");
+    serde_json::from_str(&raw).expect("valid Python vector schema")
 }
 
 #[test]
 fn pp_and_keypairs_are_byte_identical() {
-    let v = match load_vectors() {
-        Some(v) => v,
-        None => {
-            eprintln!(
-                "vectors.json not found — skipping interop test. \
-                       Generate it with `python vectors.py --out vectors.json` \
-                       in lotrs-py/."
-            );
-            return;
-        }
-    };
-    assert_eq!(v.schema_version, 1, "vectors schema version");
+    let v = load_vectors();
+    assert_eq!(
+        v.schema_version, 3,
+        "vectors schema version (September Rej and aggregate bounds)"
+    );
     assert_eq!(v.params, TEST_PARAMS.name);
     assert_eq!(v.d, TEST_PARAMS.d);
     assert_eq!(v.n, TEST_PARAMS.N());
@@ -121,13 +102,7 @@ fn pp_and_keypairs_are_byte_identical() {
 
 #[test]
 fn signature_decodes_and_reencodes_to_same_bytes() {
-    let v = match load_vectors() {
-        Some(v) => v,
-        None => {
-            eprintln!("skipping (no vectors.json)");
-            return;
-        }
-    };
+    let v = load_vectors();
     let codec = LoTRSCodec::new(TEST_PARAMS);
     let sig_bytes = hex::decode(&v.signature.bytes).expect("sig hex");
     assert_eq!(sig_bytes.len(), v.signature.byte_length);
@@ -142,13 +117,7 @@ fn signature_decodes_and_reencodes_to_same_bytes() {
 
 #[test]
 fn signature_decoder_rejects_truncated() {
-    let v = match load_vectors() {
-        Some(v) => v,
-        None => {
-            eprintln!("skipping (no vectors.json)");
-            return;
-        }
-    };
+    let v = load_vectors();
     let codec = LoTRSCodec::new(TEST_PARAMS);
     let sig_bytes = hex::decode(&v.signature.bytes).expect("sig hex");
     // drop the last 4 bytes → should fail with a codec error, never panic
@@ -158,13 +127,7 @@ fn signature_decoder_rejects_truncated() {
 
 #[test]
 fn signature_decoder_rejects_trailing_bytes() {
-    let v = match load_vectors() {
-        Some(v) => v,
-        None => {
-            eprintln!("skipping (no vectors.json)");
-            return;
-        }
-    };
+    let v = load_vectors();
     let codec = LoTRSCodec::new(TEST_PARAMS);
     let mut sig_bytes = hex::decode(&v.signature.bytes).expect("sig hex");
     sig_bytes.push(0x00);
@@ -176,13 +139,7 @@ fn signature_decoder_rejects_trailing_bytes() {
 
 #[test]
 fn python_signature_verifies_in_rust() {
-    let v = match load_vectors() {
-        Some(v) => v,
-        None => {
-            eprintln!("skipping (no vectors.json)");
-            return;
-        }
-    };
+    let v = load_vectors();
 
     let scheme = LoTRS::new(TEST_PARAMS);
     let pp_seed = hex::decode(&v.pp_seed).expect("pp_seed hex");
@@ -209,13 +166,7 @@ fn python_signature_verifies_in_rust() {
 
 #[test]
 fn verify_rejects_tampered_message() {
-    let v = match load_vectors() {
-        Some(v) => v,
-        None => {
-            eprintln!("skipping (no vectors.json)");
-            return;
-        }
-    };
+    let v = load_vectors();
 
     let scheme = LoTRS::new(TEST_PARAMS);
     let pp_seed = hex::decode(&v.pp_seed).expect("pp_seed hex");
@@ -239,13 +190,7 @@ fn verify_rejects_tampered_message() {
 
 #[test]
 fn verify_rejects_flipped_signature_byte() {
-    let v = match load_vectors() {
-        Some(v) => v,
-        None => {
-            eprintln!("skipping (no vectors.json)");
-            return;
-        }
-    };
+    let v = load_vectors();
 
     let scheme = LoTRS::new(TEST_PARAMS);
     let pp_seed = hex::decode(&v.pp_seed).expect("pp_seed hex");
@@ -271,13 +216,7 @@ fn verify_rejects_flipped_signature_byte() {
 
 #[test]
 fn rust_sign_produces_same_bytes_as_python() {
-    let v = match load_vectors() {
-        Some(v) => v,
-        None => {
-            eprintln!("skipping (no vectors.json)");
-            return;
-        }
-    };
+    let v = load_vectors();
     let scheme = LoTRS::new(TEST_PARAMS);
     let pp_seed = hex::decode(&v.pp_seed).expect("pp_seed hex");
     let pp = scheme.setup(&pp_seed);
@@ -326,13 +265,7 @@ fn rust_sign_produces_same_bytes_as_python() {
 
 #[test]
 fn rust_sign_output_verifies() {
-    let v = match load_vectors() {
-        Some(v) => v,
-        None => {
-            eprintln!("skipping (no vectors.json)");
-            return;
-        }
-    };
+    let v = load_vectors();
     let scheme = LoTRS::new(TEST_PARAMS);
     let pp_seed = hex::decode(&v.pp_seed).expect("pp_seed hex");
     let pp = scheme.setup(&pp_seed);
@@ -374,63 +307,63 @@ fn rust_sign_output_verifies() {
     );
 }
 
-/// BENCH-level signing at `d = 128` with 16 signers takes ~1 min per sign
-/// on a modern laptop in release mode.  Marked `#[ignore]` so the
+/// Exercise both benchmark and production signing at `d = 128`.
+/// Marked `#[ignore]` so the
 /// default `cargo test` stays fast; run explicitly with:
 ///
 ///     cargo test --release --test interop -- --ignored bench_and_production_signing_round_trip
 #[test]
 #[ignore]
 fn bench_and_production_signing_round_trip() {
-    // Smoke test: BENCH / PRODUCTION parameter sets should now sign +
-    // self-verify via the FACCT mask path.  We don't have a Python
-    // signature to compare against (Python can't build those CDTs),
-    // but we can confirm the Rust pipeline is consistent with itself.
-    //
-    // Intentionally use the smaller BENCH set; PRODUCTION's larger
-    // sigmas make this slow — covered by mask_sampler_dispatch_matches_sigma
-    // for the static property, and by the Python / Rust FACCT KAT for
-    // correctness of the sampler itself.
-    use lotrs::BENCH_PARAMS;
-    let par = BENCH_PARAMS;
-    let scheme = LoTRS::new(par);
-    let pp = scheme.setup(&[0u8; 32]);
+    // Exercise both revised d=128 lattices, including the complete
+    // production public-key table and FACCT mask widths.
+    for par in [lotrs::BENCH_PARAMS, lotrs::PRODUCTION_PARAMS] {
+        let scheme = LoTRS::new(par);
+        let pp = scheme.setup(&[0u8; 32]);
 
-    // deterministic keygen for every signer in the ring
-    let mut pk_table: Vec<Vec<Vec<Vec<u64>>>> = Vec::with_capacity(par.N());
-    let mut sk_table: Vec<Vec<Vec<Vec<u64>>>> = Vec::with_capacity(par.N());
-    let mut pk_table_bytes: Vec<Vec<Vec<u8>>> = Vec::with_capacity(par.N());
-    let codec = lotrs::LoTRSCodec::new(par);
-    for col in 0..par.N() {
-        let mut col_pks = Vec::with_capacity(par.T);
-        let mut col_sks = Vec::with_capacity(par.T);
-        let mut col_pkb = Vec::with_capacity(par.T);
-        for row in 0..par.T {
-            let mut seed = [0u8; 32];
-            seed[0] = col as u8;
-            seed[1] = row as u8;
-            let (sk, pk) = scheme.keygen(&pp, &seed);
-            let pk_b = codec.pk_encode(&pk).expect("pk_encode");
-            col_pks.push(pk);
-            col_sks.push(sk);
-            col_pkb.push(pk_b);
+        // deterministic keygen for every signer in the ring
+        let mut pk_table: Vec<Vec<Vec<Vec<u64>>>> = Vec::with_capacity(par.N());
+        let mut sk_table: Vec<Vec<Vec<Vec<u64>>>> = Vec::with_capacity(par.N());
+        let mut pk_table_bytes: Vec<Vec<Vec<u8>>> = Vec::with_capacity(par.N());
+        let codec = lotrs::LoTRSCodec::new(par);
+        for col in 0..par.N() {
+            let mut col_pks = Vec::with_capacity(par.T);
+            let mut col_sks = Vec::with_capacity(par.T);
+            let mut col_pkb = Vec::with_capacity(par.T);
+            for row in 0..par.T {
+                let mut seed = [0u8; 32];
+                seed[0] = col as u8;
+                seed[1] = row as u8;
+                let (sk, pk) = scheme.keygen(&pp, &seed);
+                let pk_b = codec.pk_encode(&pk).expect("pk_encode");
+                col_pks.push(pk);
+                col_sks.push(sk);
+                col_pkb.push(pk_b);
+            }
+            pk_table.push(col_pks);
+            sk_table.push(col_sks);
+            pk_table_bytes.push(col_pkb);
         }
-        pk_table.push(col_pks);
-        sk_table.push(col_sks);
-        pk_table_bytes.push(col_pkb);
+
+        let ell = 3usize;
+        let sks: Vec<Vec<Vec<u64>>> = (0..par.T).map(|u| sk_table[ell][u].clone()).collect();
+        let mu = b"bench round trip";
+
+        let (sig_bytes, timings) = scheme
+            .sign_with_timings(&pp, &sks, ell, mu, &pk_table, &[0xaa; 32])
+            .expect("sign should succeed");
+        assert!(
+            scheme.verify(&pp, mu, &sig_bytes, &pk_table_bytes),
+            "{} self-round-trip failed",
+            par.name
+        );
+        eprintln!(
+            "{}: {} signature bytes, {} attempts",
+            par.name,
+            sig_bytes.len(),
+            timings.attempts
+        );
     }
-
-    let ell = 3usize;
-    let sks: Vec<Vec<Vec<u64>>> = (0..par.T).map(|u| sk_table[ell][u].clone()).collect();
-    let mu = b"bench round trip";
-
-    let sig_bytes = scheme
-        .sign(&pp, &sks, ell, mu, &pk_table, &[0xaa; 32])
-        .expect("BENCH sign should succeed");
-    assert!(
-        scheme.verify(&pp, mu, &sig_bytes, &pk_table_bytes),
-        "BENCH self-round-trip failed"
-    );
 }
 
 #[test]

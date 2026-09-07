@@ -16,10 +16,11 @@ exists in Z_p for every d ∈ {128, 256}.  Their product
 
     P = p1 * p2 ≈ 2^96
 
-is comfortably larger than 2 * max|c_k| for every combination of
-(d, q) and (d, q_hat) used in the scheme, even with inner-product
-accumulation up to 256 terms — so CRT reconstruction recovers the
-*exact* integer product coefficient, not a residue.
+is larger than 2 * max|c_k| for each individual polynomial product
+at the supported scheme parameters. Python reduces each product modulo
+q before accumulating a matrix-vector product. At the revised 44-bit q,
+an entire matrix row cannot in general be accumulated before CRT; Rust's
+batched implementation enforces the corresponding public size bound.
 
 Pipeline for one multiplication in R_q of two operands in [0, q):
 
@@ -31,13 +32,13 @@ Pipeline for one multiplication in R_q of two operands in [0, q):
     6. CRT-reconstruct the exact integer coefficient (signed).
     7. Reduce mod q (or mod q_hat for the binary-proof ring).
 
-Bit budget (headroom against P/2 = 2^95):
+Bit budget (headroom against P/2 approximately 2^95):
 
-                           worst |c_k|     inner <= 256
-    d=128, q   < 2^38      < 2^81          < 2^89
-    d=128, q̂ < 2^34      < 2^73          < 2^81
-    d=256, q   < 2^38      < 2^82          < 2^90
-    d=256, q̂ < 2^34      < 2^74          < 2^82
+                           worst |c_k| for one product
+    d=128, q   < 2^44      < 2^93
+    d=128, q̂ < 2^38      < 2^81
+    d=256, q   < 2^44      < 2^94
+    d=256, q̂ < 2^38      < 2^82
 
 Optimisation note (Mersenne-style reduction)
 --------------------------------------------

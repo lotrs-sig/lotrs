@@ -2,8 +2,8 @@
 
 This repository accompanies the paper:
 
-> Nikai Jagganath, Ron Steinfeld, Muhammed F. Esgin, Amin Sakzad,
-> Dongxi Liu, and Markku-Juhani O. Saarinen. **LoTRS: Practical
+> Nikai Jagganath, Muhammed F. Esgin, Ron Steinfeld, Amin Sakzad,
+> Markku-Juhani O. Saarinen, and Dongxi Liu. **LoTRS: Practical
 > Post-Quantum Structured Threshold Ring Signatures from Lattices**.
 > IACR Cryptology ePrint Archive, Report 2026/974, 2026.
 > <https://eprint.iacr.org/2026/974>
@@ -20,21 +20,24 @@ Citation:
 }
 ```
 
-The artifact contains two complete reference implementations
-(Python and Rust), the parameter-estimation scripts that reproduce
-the concrete parameter set, the FACCT-style sampler specification
-used by both implementations, and the bench harness that produced
-the timings reported in the paper.
+The artifact contains Python and Rust implementations, parameter-estimation
+scripts, a FACCT-style sampler specification, and a benchmark harness.
+The concrete `kappa=1` instantiation uses the shared production profile in
+[`parameters.json`](parameters.json).
 
 ```
 README.md                  this file
 LICENSE                    MIT
-Makefile                   thin wrapper (top-level `clean`)
+Makefile                   conformance checks and cleanup
+parameters.json            shared production parameter manifest
 lotrs-facct-sampler.md     specification of the large-sigma sampler
 lotrs-py/                  Python reference implementation
 lotrs-rs/                  Rust performance implementation
 estimator/                 SageMath parameter-estimation scripts
 ```
+
+Conformance scripts and signature fixtures live in `lotrs-py/`; the Rust
+tests consume those fixtures and the shared manifest directly.
 
 The Python implementation is the **golden reference** — it is short,
 readable, and emits a deterministic test-vector blob that the Rust
@@ -42,32 +45,33 @@ implementation reproduces byte-for-byte.
 
 ## Quick reproducibility check
 
-The fastest end-to-end smoke test:
+Requires Python, a Rust toolchain with a C linker, and Make. `check-full`
+also requires SageMath as `sage` on `PATH`. Tested with Python 3.14.7,
+Rust/Cargo 1.98.1, and SageMath 10.9 on Linux x86_64. Dependency
+installation needs network access; the tests and experiments run locally.
+
+Create a Python environment and run the complete conformance check:
 
 ```bash
-# 1. Python reference: run all 134 unit / e2e tests + verify shipped test vectors.
-cd lotrs-py
-pip install -r requirements.txt              # numpy, pycryptodome, mpmath
-for t in test_ring test_sample test_params \
-         test_lotrs test_codec test_wtilde test_e2e; do
-    python "$t.py"
-done
-python vectors.py --verify vectors.json
-cd ..
-
-# 2. Rust mirror: run all unit tests + 12 interop tests against the same vectors.json.
-cd lotrs-rs
-cargo test --release                          # finishes in ≈ 1 minute
+python3 -m venv .venv
+. .venv/bin/activate
+python -m pip install -r lotrs-py/requirements.txt
+make check
+make check-full       # adds full production signing and Sage alignment tests
 ```
 
-The Rust interop tests load `../lotrs-py/vectors.json` and compare
-`pp`, `sk`, `pk`, and full signatures byte-for-byte against the Python
-reference.  All tests must pass.
+`make check` runs all Python tests, verifies both shipped signature fixtures,
+checks the parameter manifest, and runs Rust unit and interoperability tests.
+The Rust tests require the shipped Python vectors and compare keys and full
+signatures byte-for-byte. The shipped vectors use schema 3.
+`make check-full` passes 142 Python tests, 65 Rust tests, and five Sage tests,
+including production signing and the compact production-lattice fixture.
+Allow about five minutes after dependency installation.
 
 ## Reproducing the benchmarks
 
-The numbers reported in the paper come from a single back-to-back
-run of `examples/bench` on the Rust implementation.  To reproduce:
+The benchmark reports, CSV data, and plots are in
+[`lotrs-rs/bench-out/`](lotrs-rs/bench-out/). To reproduce the full grid:
 
 ```bash
 cd lotrs-rs
@@ -79,9 +83,9 @@ pip install matplotlib                       # one-time, only for plot_bench.py
 python3 scripts/plot_bench.py bench-out/grid-d128.md
 ```
 
-Wall-clock is **≈ 8 minutes** on a modern x86_64 box (release
-build, `rayon` multi-threaded across all hardware threads).  The
-plot script writes `bench-out/{data.csv, summary.md, sign-vs-T.pdf,
+Runtime depends on the machine. The release build uses `rayon` across
+available hardware threads. The plot script writes
+`bench-out/{data.csv, summary.md, sign-vs-T.pdf,
 sigsize-vs-T.pdf, breakdown-vs-T.pdf, rs-alone-vs-N.pdf,
 dualms-alone-vs-T.pdf}`.
 
@@ -92,18 +96,17 @@ without the full grid:
 cargo run --release --example bench -- --skip-test --with-prod
 ```
 
-The reference output captured by the authors lives under
-`lotrs-rs/bench-out/` — `summary.md` is the human-readable digest,
-`data.csv` is the machine-readable form.
+The current run's `summary.md` and `data.csv` are the readable and machine
+readable results. Its `README.md` records the measurement environment.
 
 See [`lotrs-rs/README.md`](lotrs-rs/README.md) § Benchmarks for the
 hardware / methodology footnotes (sample counts per cell, the
-empirical-vs-heuristic attempt-count gap, and column definitions).
+measured and estimated attempt counts, and column definitions).
 
 ## Reproducing the parameter selection
 
-The concrete parameters in Table 3 of the paper are the output of
-the SageMath scripts in `estimator/`:
+The SageMath scripts in `estimator/` calculate sizes, rejection counts,
+parameter conditions, and attack-cost estimates for the shared manifest:
 
 ```bash
 cd estimator
@@ -112,28 +115,32 @@ make reference      # writes a fresh comparison log to compare against
                     # the checked-in LoTRS-Estimate-Output-N100T50.txt
 ```
 
-Headline values for the paper parameter point (`N = 100`, `T = 50`):
+For the production profile (`N=100`, `T=50`), the reference run gives:
 
-```
-Signature size                            ≈ 35.06 KB
-Single public key size                    ≈  7.13 KB
-Ring PK size                              ≈ 35,625 KB
-Number of repetitions for rejection samp. ≈  2.98   (estimator heuristic)
-Binary-proof PQ ASIS cost                 ≈ 87 bits
-DualMS      PQ ASIS cost                  ≈ 90 bits
+```text
+Analytic signature size                  52.6574 KiB
+Single public key size                   9.40625 KiB
+Ring PK size                             47,031.25 KiB
+Expected signing attempts                4.7728 (heuristic)
+Binary-proof PQ ASIS cost (variant 0)     100.7978 bits
+DualMS PQ ASIS cost (variant 0)           94.16636 bits
 ```
 
-The "number of repetitions" is the estimator's restart-rate
-heuristic μ_total; empirical attempts in the reference
-implementations may be slightly higher because the signer also
-performs a `w̃₀`-stability restart on top of the rejection checks
-counted here.
+The full output reports all three bundled ASIS variants separately;
+variants 1 and 2 give 88.86122 bits for the binary proof and 86.20864 bits
+for DualMS.
+The manifest uses `k=14, l=20, l'=21, n_hat=12, k_hat=11`,
+`q=2^43-67`, and `q_hat=2^35-451`. Both binary-proof rejection factors
+are 24; `phi=max(22*T,1100)` retains the regularity floor at small thresholds.
+The analytic size is an encoding estimate; the measured Rice-encoded
+signature is 53.53 KiB. The attack costs above do not substantiate 128-bit
+post-quantum security.
 
 Requires SageMath with Python support available as `sage`.  The
 estimator vendors local copies of the lattice estimator and the
 ASIS/MSIS estimator so no network access is needed at run time —
-see [`estimator/README.md`](estimator/README.md) for provenance and
-the full list of helper scripts.
+see [`estimator/README.md`](estimator/README.md) for requirements and
+the bundled helper libraries.
 
 ## Component overviews
 
@@ -144,7 +151,8 @@ instantiation.  Covers parameters / derived bounds, ring arithmetic
 (with auxiliary-prime CRT-NTT), CDT and FACCT-style Gaussian
 samplers, signature encoding/decoding, the full signing and
 verification pipeline, unit tests, and the deterministic
-test-vector emitter.  Pure Python; no compiled extensions.
+test-vector emitter.  The LoTRS implementation is Python; dependencies include NumPy,
+PyCryptodome, and mpmath.
 
 ### `lotrs-rs/`
 
@@ -162,11 +170,9 @@ Fiat-Shamir hash, instead of re-hashing the multi-MiB ring
 public-key table at every call site.  Binding to the full PK is
 preserved by SHAKE-128 collision-resistance.
 
-The artifact does **not** claim a constant-time signing
-implementation.  The Rust arithmetic hot paths have received a first
-hardening pass, but Gaussian/FACCT/rejection sampling and signing
-restart logic remain data-dependent; see `lotrs-rs/README.md` for the
-current side-channel status.
+The artifact does **not** claim a constant-time signing implementation.
+Gaussian/FACCT/rejection sampling and signing restart logic are
+data-dependent; see `lotrs-rs/README.md` for the side-channel status.
 
 ### `estimator/`
 
@@ -174,7 +180,7 @@ SageMath scripts that reproduce the concrete parameter selection,
 size calculations, and post-quantum security estimates.  Vendors
 local copies of the lattice estimator and the ASIS/MSIS estimator
 so the artifact can be evaluated without fetching dependencies.
-See `estimator/README.md` for requirements and provenance notes for
+See `estimator/README.md` for requirements and details of
 the bundled external estimator components.
 
 ### `lotrs-facct-sampler.md`

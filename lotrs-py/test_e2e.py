@@ -279,6 +279,46 @@ def test_signature_norms_bounded():
 #  Runner
 # ===========================================================================
 
+def test_aggregate_infinity_bounds_independent_of_l2():
+    """A single large coefficient can pass l2 while violating the new bound."""
+    scheme, codec = _get()
+    p = TEST_PARAMS
+    sig = {"z_tilde": [scheme.Rq.zero() for _ in range(p.l)],
+           "r_tilde": [scheme.Rq.zero() for _ in range(p.l_prime)],
+           "e_tilde": [scheme.Rq.zero() for _ in range(p.k)]}
+    for field, inf, l2, codec_bound in (
+            ("z_tilde", p.B_tilde_z_inf, p.B_tilde_z, codec.bound_zt),
+            ("r_tilde", p.B_tilde_r_inf, p.B_tilde_r, codec.bound_rt),
+            ("e_tilde", p.B_tilde_e_inf, p.B_tilde_e, codec.bound_et)):
+        for sign in (-1, 1):
+            sig[field][0][0] = (sign * math.floor(inf)) % p.q
+            assert scheme._aggregate_norms_ok(sig)
+            coeff = math.floor(inf) + 1
+            assert coeff < l2
+            assert coeff > codec_bound
+            sig[field][0][0] = (sign * coeff) % p.q
+            assert not scheme._aggregate_norms_ok(sig), field
+        sig[field][0][0] = 0
+
+
+def test_aggregate_l2_bounds_remain_enforced():
+    scheme, _ = _get()
+    p = TEST_PARAMS
+    sig = {"z_tilde": [scheme.Rq.zero() for _ in range(p.l)],
+           "r_tilde": [scheme.Rq.zero() for _ in range(p.l_prime)],
+           "e_tilde": [scheme.Rq.zero() for _ in range(p.k)]}
+    for field, width, inf in (
+            ("z_tilde", p.sigma_tilde_z, p.B_tilde_z_inf),
+            ("r_tilde", p.sigma_tilde_r, p.B_tilde_r_inf),
+            ("e_tilde", p.sigma_tilde_e, p.B_tilde_e_inf)):
+        coeff = math.floor(p.tail_t * width) + 1
+        assert coeff < inf
+        for poly in sig[field]:
+            poly[:] = [coeff] * p.d
+        assert not scheme._aggregate_norms_ok(sig), field
+        for poly in sig[field]:
+            poly[:] = [0] * p.d
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items())
              if k.startswith("test_") and callable(v)]

@@ -11,7 +11,7 @@ from sage.all import *
 
 def check_q_prime_5_mod_8(q):
     rem = mod(q,8) #rem should be a multiple of 5
-    if(rem == 5):
+    if(rem == 5 and is_prime(q)):
         print(q, " equiv 5 mod 8")
         return True
     else:
@@ -26,9 +26,17 @@ def checkChallengeDiff(qhat, q, x_inf_norm):
     print("Challenge diffs invertible mod qhat:", RR(2*x_inf_norm) < sqrt(RR(qhat)/ 2))
     print("Challenge diffs invertible mod q", RR(2*x_inf_norm) < sqrt(RR(q)/ 2), "\n")
 
-def checkRangeProofCondition(d, kappa, phi_a, w, qhat):
-    B_f1 = RR(6 * phi_a * sqrt(kappa * w))
-    qhat_min = (d*pow(2+2*B_f1, 2))
-    print("log(qhat_min)",log(qhat_min, 2).n())
-    print("log(qhat)",log(qhat, 2).n())
+    return (2*x_inf_norm < sqrt(RR(qhat)/2)
+            and 2*x_inf_norm < sqrt(RR(q)/2))
+
+def checkRangeProofCondition(d, kappa, phi_a, w, qhat, N):
+    B_a = RR(sqrt(kappa * w))
+    qhat_min_range = RR(d*pow(2 + 12*phi_a*B_a, 2))   # d(2 + 12 phi_a B_a)^2
+    qhat_min_soundness = RR(2*pow(N, 2))              # 2N^2
+    qhat_min = max(qhat_min_range, qhat_min_soundness)
+    print("log(qhat_min_range)     ", log(qhat_min_range, 2).n())
+    print("log(qhat_min_soundness) ", log(qhat_min_soundness, 2).n())
+    print("log(qhat_min)           ", log(qhat_min, 2).n())
+    print("log(qhat)               ", log(qhat, 2).n())
     print("Range proof condition:", qhat > qhat_min)
+    return qhat > qhat_min

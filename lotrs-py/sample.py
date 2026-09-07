@@ -488,7 +488,7 @@ def xof_sample_bounded(xof, bound, d):
     return xof_sample_short(xof, bound, d)
 
 
-# ---- rejection sampling (Rej / RejOp, Fig. 1) ---------------------------
+# ---- rejection sampling (Rej, September Fig. 8) ---------------------------
 
 def _coeff_inner(a, b):
     """Inner product of two coefficient lists (plain integers)."""
@@ -509,7 +509,7 @@ def _flat(vec_of_polys):
 
 def rej(xof, z_flat, v_flat, phi, K):
     """
-    Rejection sampling  Rej(z, v, phi, K)  -- Fig. 1, left column.
+    Rejection sampling Rej(z, v, phi, K) -- September Fig. 8.
 
     Returns True  on accept (output 0 in the paper = continue),
             False on reject (output 1 = abort / restart).
@@ -544,7 +544,7 @@ def rej(xof, z_flat, v_flat, phi, K):
 
 def rej_op(xof, z_flat, v_flat, phi, K):
     """
-    Optimised rejection sampling  RejOp(z, c, phi, K)  -- Fig. 1, right.
+    Legacy RejOp helper; unused by the September signing protocol.
 
     Exploits  <z, v> >= 0.  Returns True on accept, False on reject.
     """

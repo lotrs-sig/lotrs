@@ -4,23 +4,23 @@
 
 | N | T | Sign (s) | Verify (ms) | KAgg (ms) | sig (KiB) | single pk (KiB) | ring PK (MiB) |
 |---:|---:|---:|---:|---:|---:|---:|---:|
-| 32 | 4 | 0.12 | 26 | 10 | 23.89 | 7.12 | 0.89 |
-| 32 | 8 | 0.14 | 31 | 16 | 24.34 | 7.12 | 1.78 |
-| 32 | 16 | 0.15 | 43 | 32 | 24.98 | 7.12 | 3.56 |
-| 32 | 32 | 0.28 | 66 | 52 | 25.42 | 7.12 | 7.12 |
-| 100 | 5 | 0.42 | 60 | 23 | 34.01 | 7.12 | 3.48 |
-| 100 | 10 | 0.44 | 81 | 43 | 34.64 | 7.12 | 6.96 |
-| 100 | 25 | 0.57 | 145 | 103 | 35.36 | 7.12 | 17.40 |
-| 100 | 50 | 0.79 | 250 | 198 | 35.79 | 7.12 | 34.79 |
+| 32 | 4 | 0.10 | 34 | 7 | 41.90 | 9.41 | 1.18 |
+| 32 | 8 | 0.12 | 42 | 13 | 42.24 | 9.41 | 2.35 |
+| 32 | 16 | 0.15 | 55 | 26 | 42.72 | 9.41 | 4.70 |
+| 32 | 32 | 0.27 | 82 | 50 | 43.09 | 9.41 | 9.41 |
+| 100 | 5 | 0.23 | 77 | 24 | 51.97 | 9.41 | 4.59 |
+| 100 | 10 | 0.27 | 103 | 46 | 52.33 | 9.41 | 9.19 |
+| 100 | 25 | 0.38 | 182 | 110 | 53.01 | 9.41 | 22.96 |
+| 100 | 50 | 0.92 | 311 | 224 | 53.53 | 9.41 | 45.93 |
 
 ## RS-alone (T=1)
 
-Plain ring signature: one signer, ring of N keys.  Numbers are the LoTRS protocol at T=1, *not* re-tuned (φ=22·T is small at T=1, so attempt counts are inflated relative to a properly-tuned standalone RS).
+Plain ring signature: one signer, ring of N keys.  The run retains the LoTRS lattice and masking policy specified in the input report.
 
 | N | Sign (s) | Verify (ms) | sig (KiB) | attempts |
 |---:|---:|---:|---:|---:|
-| 32 | 0.11 | 19 | 22.82 | 6.5 |
-| 100 | 0.25 | 43 | 32.84 | 5.8 |
+| 32 | 0.08 | 27 | 41.02 | 3.0 |
+| 100 | 0.17 | 55 | 51.03 | 2.7 |
 
 ## DualMS-alone (N=1)
 
@@ -28,8 +28,8 @@ Plain multi-signature, no ring hiding.  `Sign_DualMS` / `Verify_DualMS` are read
 
 | T | Sign$_\mathrm{DualMS}$ (ms) | Verify$_\mathrm{DualMS}$ (ms) | sig (KiB) | attempts |
 |---:|---:|---:|---:|---:|
-| 2 | 27 | 2.6 | 18.70 | 5.8 |
-| 4 | 36 | 3.0 | 19.34 | 7.0 |
-| 8 | 35 | 4.0 | 19.79 | 5.6 |
-| 16 | 45 | 5.9 | 20.42 | 5.7 |
+| 2 | 21 | 9.3 | 36.82 | 2.5 |
+| 4 | 28 | 9.6 | 37.31 | 3.1 |
+| 8 | 32 | 10.8 | 37.67 | 2.9 |
+| 16 | 38 | 13.0 | 38.17 | 2.9 |
 

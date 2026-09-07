@@ -2,17 +2,17 @@
 //!
 //! Four concrete parameter sets are provided.  The three d=128 sets
 //! track `estimator/lotrs_estimate.py` and share the same lattice
-//! (`k=12, l=5, l'=6, n̂=11, k̂=8`,
-//! `phi_a=24`, `phi_b=4`, `K_A=28`, `K_B=5`, `K_w=5`,
-//! `q = largest prime ≤ 2^38 with q ≡ 5 mod 8`,
-//! `q_hat = largest prime < 2^38 with q_hat ≡ 5 mod 8`).  Only
-//! `T`, `beta`, and `phi = 22·T` vary between them.
+//! (`k=14, l=20, l'=21, n̂=12, k̂=11`,
+//! `phi_a=24`, `phi_b=24`, `K_A=28`, `K_B=5`, `K_w=5`,
+//! `q = largest prime < 2^43 with q ≡ 5 mod 8`,
+//! `q_hat = largest prime < 2^35 with q_hat ≡ 5 mod 8`).  Only
+//! `T`, `beta`, and `phi = max(22·T, 1100)` vary between them.
 //!
 //! * [`TEST_PARAMS`]       — small (d=32, N=4, T=2) for correctness testing.
-//! * [`BENCH_4OF32`]       — 4-of-32 threshold, d=128, ~22 KB signatures.
+//! * [`BENCH_4OF32`]       — 4-of-32 threshold, d=128.
 //!                           Probes smaller `T` at fixed `N=32`.
-//! * [`BENCH_PARAMS`]      — 16-of-32 threshold, d=128, ~23 KB signatures.
-//! * [`PRODUCTION_PARAMS`] — 50-of-100, d=128, ~35 KB signatures.
+//! * [`BENCH_PARAMS`]      — 16-of-32 threshold, d=128.
+//! * [`PRODUCTION_PARAMS`] — 50-of-100, d=128.
 //!
 //! All derived quantities (bounds, Gaussian widths, etc.) are exposed
 //! as `const fn` methods where possible and as regular methods
@@ -79,6 +79,8 @@ pub struct LoTRSParams {
     /// Sentinel `< 0` ⇒ defaults to `eta` via [`Self::eta_p`].
     pub eta_prime: i32,
     pub tail_t: f64,
+    /// Coefficientwise aggregate-response tail factor (September Table 2).
+    pub tail_inf: f64,
 
     /// Declared Gaussian backend for the two mask widths.  See
     /// [`MaskSamplerKind`].
@@ -155,6 +157,35 @@ impl LoTRSParams {
     }
     pub fn sigma_b(&self) -> f64 {
         self.phi_b * self.B_b()
+    }
+
+    pub fn sigma_tilde_z(&self) -> f64 {
+        self.sigma_0() * (self.T as f64).sqrt()
+    }
+    pub fn sigma_tilde_r(&self) -> f64 {
+        self.sigma_0_prime() * (self.T as f64).sqrt()
+    }
+    /// Independent error variances add (B_hat_0 in Table 2).
+    pub fn sigma_tilde_e(&self) -> f64 {
+        (self.sigma_0().powi(2) + self.sigma_0_prime().powi(2)).sqrt() * (self.T as f64).sqrt()
+    }
+    pub fn B_tilde_z(&self) -> f64 {
+        self.tail_t * self.sigma_tilde_z() * ((self.d * self.l) as f64).sqrt()
+    }
+    pub fn B_tilde_r(&self) -> f64 {
+        self.tail_t * self.sigma_tilde_r() * ((self.d * self.l_prime) as f64).sqrt()
+    }
+    pub fn B_tilde_e(&self) -> f64 {
+        self.tail_t * self.sigma_tilde_e() * ((self.d * self.k) as f64).sqrt()
+    }
+    pub fn B_tilde_z_inf(&self) -> f64 {
+        self.tail_inf * self.sigma_tilde_z()
+    }
+    pub fn B_tilde_r_inf(&self) -> f64 {
+        self.tail_inf * self.sigma_tilde_r()
+    }
+    pub fn B_tilde_e_inf(&self) -> f64 {
+        self.tail_inf * self.sigma_tilde_e()
     }
 
     // ---- binary-proof bounds --------------------------------------------
@@ -269,6 +300,7 @@ pub const TEST_PARAMS: LoTRSParams = LoTRSParams {
     max_attempts: 2000,
     eta_prime: -1,
     tail_t: 2.0,
+    tail_inf: 12.0,
     mask_sampler: MaskSamplerKind::Cdt,
     eps_tot: EPS_TOT_DEFAULT,
 };
@@ -276,36 +308,35 @@ pub const TEST_PARAMS: LoTRSParams = LoTRSParams {
 /// Production 50-of-100 parameter set.  Matches
 /// `estimator/lotrs_estimate.py` (output:
 /// `estimator/LoTRS-Estimate-Output-N100T50.txt`).  Signature
-/// size ~ 35 KB, ~ 3 expected attempts (estimator heuristic;
-/// empirical may be slightly higher due to the signer's
-/// `w̃₀`-stability restart).
+/// estimates must use the verifier's actual bounds and rejection rules.
 pub const PRODUCTION_PARAMS: LoTRSParams = LoTRSParams {
     name: "lotrs-128",
     d: 128,
-    q: 274_877_906_837,   // largest prime < 2^38, 5 mod 8
-    q_hat: 274_877_906_837, // largest prime < 2^38, 5 mod 8
+    q: 8_796_093_022_141,  // largest prime < 2^43, 5 mod 8
+    q_hat: 34_359_737_917, // largest prime < 2^35, 5 mod 8
     kappa: 1,
     beta: 100,
     T: 50,
-    k: 12,
-    l: 5,
-    l_prime: 6,
-    n_hat: 11,
-    k_hat: 8,
+    k: 14,
+    l: 20,
+    l_prime: 21,
+    n_hat: 12,
+    k_hat: 11,
     w: 31,
     eta: 1,
     phi: 1100.0, // 22 * T
     phi_a: 24.0, // fixed across T
-    phi_b: 4.0,
+    phi_b: 24.0,
     K_A: 28, // ceil(log2(n_hat·d·(w·2^K_B − 1)/ln μ_BG_target)),
-             //   μ_BG_target = 1.01
+    //   μ_BG_target = 1.01
     K_B: 5,
     K_w: 5,
     lam: 128,
     max_attempts: 200,
     eta_prime: -1,
     tail_t: 1.2,
-    mask_sampler: MaskSamplerKind::Facct, // sigma_0 ≈ 5e7 — CDT infeasible
+    tail_inf: 12.0,
+    mask_sampler: MaskSamplerKind::Facct, // sigma_0 ≈ 6.97e7 — CDT infeasible
     eps_tot: EPS_TOT_DEFAULT,
 };
 
@@ -313,21 +344,21 @@ pub const PRODUCTION_PARAMS: LoTRSParams = LoTRSParams {
 pub const BENCH_PARAMS: LoTRSParams = LoTRSParams {
     name: "lotrs-bench-16of32",
     d: 128,
-    q: 274_877_906_837,
-    q_hat: 274_877_906_837,
+    q: 8_796_093_022_141,
+    q_hat: 34_359_737_917,
     kappa: 1,
     beta: 32,
     T: 16,
-    k: 12,
-    l: 5,
-    l_prime: 6,
-    n_hat: 11,
-    k_hat: 8,
+    k: 14,
+    l: 20,
+    l_prime: 21,
+    n_hat: 12,
+    k_hat: 11,
     w: 31,
     eta: 1,
-    phi: 352.0, // 22 * T
+    phi: 1100.0, // max(22*T, 1100): regularity floor
     phi_a: 24.0,
-    phi_b: 4.0,
+    phi_b: 24.0,
     K_A: 28,
     K_B: 5,
     K_w: 5,
@@ -335,6 +366,7 @@ pub const BENCH_PARAMS: LoTRSParams = LoTRSParams {
     max_attempts: 200,
     eta_prime: -1,
     tail_t: 1.2,
+    tail_inf: 12.0,
     mask_sampler: MaskSamplerKind::Facct,
     eps_tot: EPS_TOT_DEFAULT,
 };
@@ -344,21 +376,21 @@ pub const BENCH_PARAMS: LoTRSParams = LoTRSParams {
 pub const BENCH_4OF32: LoTRSParams = LoTRSParams {
     name: "lotrs-bench-4of32",
     d: 128,
-    q: 274_877_906_837,
-    q_hat: 274_877_906_837,
+    q: 8_796_093_022_141,
+    q_hat: 34_359_737_917,
     kappa: 1,
     beta: 32,
     T: 4,
-    k: 12,
-    l: 5,
-    l_prime: 6,
-    n_hat: 11,
-    k_hat: 8,
+    k: 14,
+    l: 20,
+    l_prime: 21,
+    n_hat: 12,
+    k_hat: 11,
     w: 31,
     eta: 1,
-    phi: 88.0, // 22 * T
+    phi: 1100.0, // max(22*T, 1100): regularity floor
     phi_a: 24.0,
-    phi_b: 4.0,
+    phi_b: 24.0,
     K_A: 28,
     K_B: 5,
     K_w: 5,
@@ -366,6 +398,7 @@ pub const BENCH_4OF32: LoTRSParams = LoTRSParams {
     max_attempts: 200,
     eta_prime: -1,
     tail_t: 1.2,
+    tail_inf: 12.0,
     mask_sampler: MaskSamplerKind::Facct,
     eps_tot: EPS_TOT_DEFAULT,
 };
@@ -421,7 +454,9 @@ mod tests {
             assert!(
                 (p.q_hat as f64) > rhs,
                 "{}: q_hat={} not > max(d*(2+12*phi_a*B_a)^2, 2*N^2)={:.0}",
-                p.name, p.q_hat, rhs
+                p.name,
+                p.q_hat,
+                rhs
             );
             assert!(2.0 < ((p.q as f64) / 2.0).sqrt());
             assert!(2.0 < ((p.q_hat as f64) / 2.0).sqrt());

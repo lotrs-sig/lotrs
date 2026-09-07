@@ -14,18 +14,15 @@
 //! `--grid` accepts a `;`-separated list of `N,T1:T2:…` groups.  Each
 //! group shares a ring size `N` and instantiates one signer set per
 //! listed threshold `T`.  All grid entries use the d=128 lattice
-//! declared by the paper (`k=12, l=5, l'=6, n̂=11, k̂=8, phi_a=24,
-//! phi=22·T`, `q = q_hat = largest prime < 2^38`, both ≡ 5 mod 8;
+//! declared by the paper (`k=14, l=20, l'=21, n̂=12, k̂=11, phi_a=phi_b=24,
+//! phi=max(22·T,1100)`, `q < 2^43`, `q_hat < 2^35`, both ≡ 5 mod 8;
 //! `mask_sampler = facct`).
 
 use std::env;
 use std::time::{Duration, Instant};
 
 use lotrs::lotrs::LoTRS;
-use lotrs::{
-    LoTRSCodec, LoTRSParams, MaskSamplerKind, BENCH_4OF32, BENCH_PARAMS, PRODUCTION_PARAMS,
-    TEST_PARAMS,
-};
+use lotrs::{LoTRSCodec, LoTRSParams, BENCH_4OF32, BENCH_PARAMS, PRODUCTION_PARAMS, TEST_PARAMS};
 
 // -------------------------------------------------------------------------
 
@@ -109,7 +106,7 @@ fn median_f64(xs: &[f64]) -> f64 {
 }
 
 /// Per-cell timings + first/second-moment statistics over the
-/// `sign_samples` independent signing/verify seeds.
+/// `sign_samples` signing seeds and repeated verification of the last signature.
 ///
 /// Means are the headline bar heights; std deviations feed the
 /// `breakdown-vs-T` error bars and the CSV; medians sit alongside
@@ -135,8 +132,7 @@ struct Row {
     sign_rs_std: Duration,
     sign_rs_median: Duration,
     /// Mean number of rejection-sampling attempts per accepted
-    /// signature.  Mostly a sanity check (μ_total ≈ 3 at production
-    /// under v1.5 parameters; empirical may be slightly higher).
+    /// signature. The September production heuristic is approximately 4.77.
     sign_attempts: f64,
     sign_attempts_std: f64,
     sign_attempts_median: f64,
@@ -162,37 +158,16 @@ struct Row {
 /// Build a d=128 grid parameter set for an arbitrary `(N, T)`.  Shares
 /// the lattice, bit-drops, and `phi_a / phi_b / eps_tot` with the
 /// paper-aligned `PRODUCTION_PARAMS`; only `beta = N`, `T`, and
-/// `phi = 22·T` change.  The `name` field borrows from the
+/// `phi = max(22·T,1100)` change.  The `name` field borrows from the
 /// `lotrs-bench-16of32` whitelist entry so `resolve_cdt` picks the
 /// right (identical across 4of32 / 16of32 / 50of100) `sigma_a` CDT.
 fn make_grid_params(n: usize, t: usize) -> LoTRSParams {
     LoTRSParams {
         name: "lotrs-bench-16of32",
-        d: 128,
-        q: 274_877_906_837,
-        q_hat: 274_877_906_837,
-        kappa: 1,
         beta: n, // κ = 1 ⇒ N = β
         T: t,
-        k: 12,
-        l: 5,
-        l_prime: 6,
-        n_hat: 11,
-        k_hat: 8,
-        w: 31,
-        eta: 1,
-        phi: 22.0 * t as f64,
-        phi_a: 24.0,
-        phi_b: 4.0,
-        K_A: 28,
-        K_B: 5,
-        K_w: 5,
-        lam: 128,
-        max_attempts: 200,
-        eta_prime: -1,
-        tail_t: 1.2,
-        mask_sampler: MaskSamplerKind::Facct,
-        eps_tot: 0.01,
+        phi: (22.0 * t as f64).max(1100.0),
+        ..PRODUCTION_PARAMS
     }
 }
 
@@ -408,8 +383,8 @@ fn print_report(rows: &[Row]) {
     println!("### Primitive timings");
     println!();
     println!("Sign / Verify are arithmetic means over the listed");
-    println!("number of signing seeds; KeyGen / KAgg are single-run");
-    println!("(deterministic given pp / PK).");
+    println!("sample count. Verify repeats the last signature in each cell.");
+    println!("KeyGen averages 4 runs at d=128 (64 at d=32); KAgg is one run.");
     println!();
     println!("| parameter set | d | N | T | samples | KeyGen | KAgg | Sign | Verify |");
     println!("|---|---:|---:|---:|---:|---:|---:|---:|---:|");
@@ -598,13 +573,13 @@ fn main() {
             "  d={}, κ=1, k={}, l={}, l'={}, n̂={}, k̂={}, w={}, η={}",
             par0.d, par0.k, par0.l, par0.l_prime, par0.n_hat, par0.k_hat, par0.w, par0.eta
         );
-        println!("  q = {} (largest prime ≤ 2^38 with q ≡ 5 mod 8)", par0.q);
+        println!("  q = {} (largest prime < 2^43 with q ≡ 5 mod 8)", par0.q);
         println!(
-            "  q_hat = {} (largest prime < 2^38 with q_hat ≡ 5 mod 8)",
+            "  q_hat = {} (largest prime < 2^35 with q_hat ≡ 5 mod 8)",
             par0.q_hat
         );
         println!(
-            "  phi_a = {}, phi_b = {}, phi = 22·T",
+            "  phi_a = {}, phi_b = {}, phi = max(22·T,1100)",
             par0.phi_a, par0.phi_b
         );
         println!(

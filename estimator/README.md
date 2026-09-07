@@ -1,129 +1,81 @@
 # LoTRS Parameter Estimator
 
-This directory contains the scripts used to reproduce the concrete
-parameter estimates reported for the LoTRS paper, including the
-`N = 100`, `T = 50` parameter set.
+The production profile is [`../parameters.json`](../parameters.json),
+shared with the Python and Rust implementations. The estimator computes
+parameter conditions, Gaussian bounds, analytic sizes, signing-repetition
+heuristics, and lattice attack costs.
 
-## Requirements
+## Requirements and execution
 
-- SageMath with Python support available as `sage`.
-- No network access or external datasets are required at run time.
-
-## Reproducing the Paper Parameter Estimate
-
-From the repository root, run:
+SageMath must be available as `sage` (tested with SageMath 10.9; override
+with `make SAGE=/path/to/sage`). The main estimate reads the shared
+manifest; regression tests also load the Python implementation. No
+network access or external datasets are required after installation.
 
 ```bash
 cd estimator
-make
+make test           # five estimator/verifier consistency regressions
+make                # LWE and ASIS estimates, sizes, and conditions
+make reference      # save LoTRS-Estimate-Output-N100T50.generated.txt
 ```
 
-The scripts import `sage.all`, so running them with plain `python3` will
-fail unless that Python environment is the Sage Python environment.
+The full estimate takes about 18 minutes on the reference workstation.
+Compare the generated output with `LoTRS-Estimate-Output-N100T50.txt`.
+Ignore elapsed times, local paths, and final-digit numerical differences;
+compare parameter fields exactly and printed numerical results to their
+reported precision. The Makefile propagates estimator failures through
+the output pipeline.
 
-The Makefile invokes:
+## Profile and expected results
 
-```bash
-sage -c "exec(open('lotrs_estimate.py').read()); main()"
-```
+`N=100, T=50, d=128, kappa=1`, `k=14, l=20, l_prime=21`,
+`n_hat=12, k_hat=11`, `q=2^43-67`, `q_hat=2^35-451`, `w=31`,
+`eta=eta_prime=1`, `phi=1100`, `phi_a=phi_b=24`, `K_A=28`,
+`K_B=K_w=5`, `tail_t=1.2`, `tail_inf=12`, `eps_tot=0.01`.
 
-This command is used because it runs from this directory, makes the
-local helper modules importable, and explicitly invokes the script entry
-point.
+| Quantity | Result |
+|---|---:|
+| Analytic signature | 52.6574 KiB |
+| Single public key | 9.40625 KiB |
+| Full ring public keys | 47,031.25 KiB |
+| Expected attempts (heuristic) | 4.7728 |
+| Binary-proof PQ ASIS cost (variant 0) | 100.7978 bits |
+| DualMS PQ ASIS cost (variant 0) | 94.16636 bits |
+| Binary-proof PQ ASIS cost (variants 1 and 2) | 88.86122 bits |
+| DualMS PQ ASIS cost (variants 1 and 2) | 86.20864 bits |
 
-The script prints:
+All three ASIS cost-model variants are reported separately. Their outputs
+do not substantiate 128-bit post-quantum security. Passing the parameter
+condition checks is not a security certification; the reported attack
+models and cost conventions must be considered separately.
 
-- MLWE estimates for the binary-proof and DualMS components,
-- ASIS/MSIS-style estimates for the binary-proof and DualMS components,
-- the concrete signature size,
-- the single public-key and full ring public-key sizes,
-- the expected number of rejection-sampling repetitions,
-- basic parameter-condition checks.
+The analytic signature size uses `log2(4.13*sigma)` per Gaussian
+coefficient. The [Rust benchmark](../lotrs-rs/bench-out/README.md) measures
+53.53 KiB on the wire. Lossless Rice coding, fixed-width fields, byte
+alignment, and sampled coefficients determine the emitted size.
 
-For the paper parameter point (`N = 100`, `T = 50`, `κ = 1`,
-`d = 128`, `n̂ = 11`, `k̂ = 8`, `l = 5`, `l' = 6`, `k = 12`,
-`q = q̂ = 274877906837`, `φ = 22·T = 1100`,
-`φ_a = 24`, `φ_b = 4`, `K_A = 28`, `K_B = 5`, `K_w = 5`,
-`μ_BG target = 1.01`), the expected headline values are:
+## Calculations and checks
 
-```text
-Signature size: about 35.06 KB
-Single public key size: about 7.13 KB
-Ring PK size: about 35,625 KB
-Number of repetitions for rejection sampling: about 2.98 (estimator heuristic)
-Binary-proof PQ ASIS cost: about 87 bits
-DualMS      PQ ASIS cost: about 90 bits
-```
+- Binary-proof ASIS merging retains all 271 columns of six blocks,
+  relaxing adjacent bounds to fit the estimator's five-block interface.
+- DualMS ASIS uses coefficientwise verifier bounds, both determinant
+  factors, and the sum of the two error variances.
+- LWE estimates use ternary secrets and errors with finite sample counts.
+- Repetition estimates include ordinary `Rej` for `z_b` and the binary
+  proof's bound checks. The `kappa=1` stability check adds no restarts.
+- Public keys and commitments use whole coefficient bit widths.
+  Registry-size calculations enforce `T <= M <= T*N`.
+- Primality, challenge invertibility, regularity, and both range-proof
+  branches are checked; failed conditions stop the main estimate.
 
-The "number of repetitions" is the estimator's restart-rate
-heuristic μ_total; the empirical attempt count in the reference
-implementations may be higher because the signer additionally
-performs a `w̃₀`-stability restart on top of the rejection
-checks counted here.
+`lotrs_estimate.py` is the entry point. `lotrs_finder.py` contains size,
+bound, and parameter-search helpers; `lotrs_param_checks.py` implements
+condition checks. `test_alignment.py` connects ASIS buckets to verifier
+bounds. Use `make clean` to remove caches and logs.
 
-The checked-in reference output `LoTRS-Estimate-Output-N100T50.txt`
-is intended only as a comparison log. The first line is a
-hand-written scrubbing comment (`# Reference output of: ...`); the
-remaining 113 lines are the verbatim Sage output. Before including
-fresh output logs in the artifact, scrub them so they do not contain
-shell prompts, usernames, hostnames, local paths, timestamps, or
-other environment metadata.
+## Bundled dependencies
 
-To write a fresh comparison log, run:
-
-```bash
-make reference
-```
-
-This writes `LoTRS-Estimate-Output-N100T50.generated.txt` next to
-the committed reference. Diff the two to confirm the run reproduces
-the published parameters; for byte-exact comparison, strip the
-leading scrub-comment line from the committed file first
-(`diff <(tail -n +2 LoTRS-Estimate-Output-N100T50.txt) LoTRS-Estimate-Output-N100T50.generated.txt`).
-
-To remove generated caches and logs, run:
-
-```bash
-make clean
-```
-
-## Files
-
-- `lotrs_estimate.py`: main script for the concrete LoTRS parameter
-  point (`N = 100`, `T = 50`). Pins the moduli, lattice dimensions,
-  and rejection-sampling slack factors used by the paper and by the
-  reference implementations in `lotrs-py/` and `lotrs-rs/`. The
-  Python and Rust parameter sets must agree with what this script
-  prints.
-- `lotrs_finder.py`: search routines and helper formulas used to
-  derive the chosen point (LWE-rank lookup tables, ASIS bound
-  buckets, signature-size and repetition formulas). The
-  helper functions (`setBinASISBounds`, `setDualMSASISBounds`,
-  `calculate_sig_size`, `number_reps`, `calculate_PK`) are imported
-  by `lotrs_estimate.py`. Running it as a script
-  (`sage -c "exec(open('lotrs_finder.py').read()); main()"`)
-  re-runs the binary-proof MLWE / ASIS dimension sweep; the DualMS
-  sweep helpers are also exported but not invoked by default.
-- `lotrs_param_checks.py`: consistency checks for the chosen moduli,
-  challenge differences, regularity bounds, and range-proof
-  condition.
-- `LoTRS-Estimate-Output-N100T50.txt`: scrubbed reference output for
-  the concrete paper parameter point.
-
-## Provenance of External Components
-
-This directory includes local copies or adaptations of public estimator
-code so the artifact can be evaluated without fetching dependencies:
-
-- `estimator/`: bundled lattice/LWE estimator code used through
-  `from estimator import *`.
-- `kd_estimates/`: security-estimation helper scripts derived from
-  public post-quantum security-estimation code.
-- `ASIS_sec_estimate/`: asymmetric-SIS estimation scripts adapted from
-  Dilithium/security-estimates scripts, as noted in
-  `ASIS_sec_estimate/README.md`.
-
-The LoTRS-specific entry points are `lotrs_estimate.py`,
-`lotrs_finder.py`, and `lotrs_param_checks.py`. When preparing a public
-artifact, preserve the provenance notes and any applicable license
-notices for the bundled external estimator components.
+The package includes the lattice/LWE estimator in `estimator/`,
+security-estimation helpers in `kd_estimates/`, and asymmetric-SIS
+estimation code in `ASIS_sec_estimate/`. Their upstream attribution and
+license notices are retained with the source files.

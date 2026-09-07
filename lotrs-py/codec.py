@@ -249,27 +249,13 @@ class LoTRSCodec:
         self.rice_zb = optimal_rice_k(par.sigma_b)
         self.bound_zb = int(math.ceil(6 * par.sigma_b))
 
-        # e_tilde has effective width sigma_0 + sigma_0_prime
-        # (triangle inequality on z''_u + r''_u summed over u);
-        # see the matching note in lotrs.py verify().
-        sigma_z = par.sigma_0 * math.sqrt(par.T)
-        sigma_r = par.sigma_0_prime * math.sqrt(par.T)
-        sigma_e = (par.sigma_0 + par.sigma_0_prime) * math.sqrt(par.T)
-
-        t = par.tail_t
-        self.rice_zt = optimal_rice_k(sigma_z)
-        self.bound_zt = int(math.ceil(
-            t * par.sigma_0 * math.sqrt(par.T * par.d * par.l)))
-
-        self.rice_rt = optimal_rice_k(sigma_r)
-        self.bound_rt = int(math.ceil(
-            t * par.sigma_0_prime
-            * math.sqrt(par.T * par.d * par.l_prime)))
-
-        self.rice_et = optimal_rice_k(sigma_e)
-        self.bound_et = int(math.ceil(
-            t * (par.sigma_0 + par.sigma_0_prime)
-            * math.sqrt(par.T * par.d * par.k)))
+        self.rice_zt = optimal_rice_k(par.sigma_tilde_z)
+        self.rice_rt = optimal_rice_k(par.sigma_tilde_r)
+        self.rice_et = optimal_rice_k(par.sigma_tilde_e)
+        # A coefficient cannot exceed either of the verifier's bounds.
+        self.bound_zt = math.floor(min(par.B_tilde_z, par.B_tilde_z_inf))
+        self.bound_rt = math.floor(min(par.B_tilde_r, par.B_tilde_r_inf))
+        self.bound_et = math.floor(min(par.B_tilde_e, par.B_tilde_e_inf))
 
     # ---- public parameters -----------------------------------------------
 
@@ -508,9 +494,9 @@ class LoTRSCodec:
             avg_bits = math.log2(4.13 * max(sigma, 1)) + 1
             return int(math.ceil(n_polys * d * avg_bits / 8))
 
-        sigma_z = par.sigma_0 * math.sqrt(par.T)
-        sigma_r = par.sigma_0_prime * math.sqrt(par.T)
-        sigma_e = (par.sigma_0 + par.sigma_0_prime) * math.sqrt(par.T)
+        sigma_z = par.sigma_tilde_z
+        sigma_r = par.sigma_tilde_r
+        sigma_e = par.sigma_tilde_e
 
         return {
             "B_bin_hi":    par.n_hat * (self.dx_bbin * d + 7) // 8,

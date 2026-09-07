@@ -1,5 +1,7 @@
 from estimator import *
 from sage.all import *
+import json
+from pathlib import Path
 
 from kd_estimates.MSIS_security import MSIS_summarize_attacks, MSISParameterSet
 from kd_estimates.model_BKZ import delta_BKZ
@@ -7,7 +9,7 @@ from ASIS_sec_estimate.ASIS_MSIS_security import MSIS_summarize_attacks as ASIS_
 from ASIS_sec_estimate.ASIS_MSIS_security import MSISParameterSet as ASISParameterSet
 from ASIS_sec_estimate.ASIS_model_BKZ import delta_BKZ as ASIS_delta_BKZ
 
-from lotrs_finder import calculate_PK, calculate_sig_size, number_reps, setBinASISBounds, setDualMSASISBounds
+from lotrs_finder import calculate_PK, calculate_sig_size, number_reps, setBinASISBounds, setDualMSASISBounds,setDualMSMSISBounds, mergeToFiveBuckets
 
 from lotrs_param_checks import *
 
@@ -26,29 +28,39 @@ def prime_5_mod_8(bits):
         q = int(previous_prime(q))
     return q
 
-"""Main function"""
+def artifact_parameters():
+    """PDF Table 3 profile shared with the reference implementations.
+
+    N=100, T=50, l=20, l_prime=21; see README.md for numerical limitations.
+    """
+    path = Path(__file__).resolve().parent.parent / "parameters.json"
+    p = json.loads(path.read_text())
+    assert p["q"] == prime_5_mod_8(43)
+    assert p["q_hat"] == prime_5_mod_8(35)
+    assert p["kappa"] == 1
+    return p
+
+
 def main():
+    p = artifact_parameters()
+    print("LoTRS artifact profile: N=%s T=%s" % (p["beta"], p["T"]))
     RHF_max = 1.0045
 
     """Parameter variables"""
     #Common parameters
-    N = 100 #Ring size; n = beta^kappa
-    T = RR(N/2) #Threshold size
-    kappa = 1
-    beta = N #kappa = 1 --> beta = N
-
-    t=1.2 #Gaussian tail bound param
-
-    B=1 #All MLWE instances use B=1
+    beta, kappa = p["beta"], p["kappa"]
+    N, T = beta**kappa, p["T"]
+    t = p["tail_t"]
 
     x_inf_norm = 1 #Infinity norm of secret and error in MLWE instances
-    w = 31 #Hamming weight of challenge
+    w = p["w"]
 
-    eta_s, eta_prime_s = 1, 1 #Smoothing param
+    eta_s = p["eta"]
+    eta_prime_s = eta_s if p["eta_prime"] < 0 else p["eta_prime"]
 
-    d = 128 #dim(R_q), i.e., R_q = Z_q[X]/(X^d+1)
+    d = p["d"]
 
-    lam = 128 #Security parameter (bits)
+    lam = p["lam"]
     # SampleInBall-style challenge: only a lambda-bit seed x_seed is
     # transmitted on the wire; the verifier expands the sparse signed
     # challenge x deterministically from x_seed via the same XOF the
@@ -57,45 +69,46 @@ def main():
     size_x = lam
 
     #Binary proof dimensions + parameters
-    nhat = 11 #sisrank
-    khat = 8
+    nhat, khat = p["n_hat"], p["k_hat"]
 
-    # Largest prime < 2^38 with q_hat == 5 (mod 8).
-    qhat = prime_5_mod_8(38)
+    # Largest prime < 2^35 with q_hat == 5 (mod 8).
+    qhat = p["q_hat"]
     logq_hat = RR(qhat).log2()
     print("Binary proof MLWE modulus q_hat =", qhat, "logq_hat", logq_hat)
     print("nhat =", nhat, "khat =", khat)
 
-    phi_a = 24
-    phi_b = 4
+    phi_a, phi_b = p["phi_a"], p["phi_b"]
     mu_BG_target = RR(1.01)
 
     #Dropped bits
-    K_b = 5
-    K_w0 = 5
+    K_b, K_w0 = p["K_B"], p["K_w"]
     K_a = ceil(log((nhat*d*(w*pow(2, K_b)-1))/log(mu_BG_target), 2))
     print("mu_BG_target", mu_BG_target)
+    assert K_a == p["K_A"]
     print("K_a", K_a)
 
     #Set probability that bounds on f_0, f_1, g_0, g_1 will reject
-    eps_total = RR(0.01)
+    eps_total = RR(p["eps_tot"])
 
     #Binary proof bounds
     bin_arr = setBinASISBounds(beta, kappa, d, w, nhat, khat, phi_a, phi_b, K_b, eps_total, mu_BG_target)
-    B1 = bin_arr[0][0]
-    m1 = bin_arr[0][1]
 
-    B2 = bin_arr[1][0]
-    m2 = bin_arr[1][1]
+    #Merge the 6 binary-proof buckets down to the 5 the ASIS estimator takes,
+    #rather than discarding one bucket together with its columns.
+    bin_merged = mergeToFiveBuckets(bin_arr)
 
-    B3 = bin_arr[3][0] #We will skip the third value, i.e. index 2
-    m3 = bin_arr[3][1]
+    B1, m1 = bin_merged[0]
+    B2, m2 = bin_merged[1]
+    B3, m3 = bin_merged[2]
+    B4, m4 = bin_merged[3]
+    B5, m5 = bin_merged[4]
 
-    B4 = bin_arr[4][0]
-    m4 = bin_arr[4][1]
-
-    B5 = bin_arr[5][0]
-    m5 = bin_arr[5][1]
+    #The merged instance must still carry every column of the paper's item (5):
+    #m_f1 + m_f0 + m_g1 + m_g0 + m_zb + m_BG
+    bin_width_expected = 2*kappa*(beta-1) + 2*kappa + (nhat + khat) + 4*nhat
+    assert m1+m2+m3+m4+m5 == bin_width_expected, \
+        "binary AMSIS width mismatch: %s != %s" % (m1+m2+m3+m4+m5, bin_width_expected)
+    print("Binary AMSIS total width =", m1+m2+m3+m4+m5)
 
     #Binary std deviations
     B_b = sqrt(d*(nhat + khat))*w
@@ -104,17 +117,16 @@ def main():
     sigma_f = phi_a*B_a
 
     #DualMS dimensions + parameters
-    l = 5
-    l_prime = l+1
-    k = 12
+    k, l, l_prime = p["k"], p["l"], p["l_prime"]
 
-    # Largest prime < 2^38 with q == 5 (mod 8), matching q_hat.
-    q_dualms = prime_5_mod_8(38)
+    # Largest prime < 2^43 with q == 5 (mod 8).
+    q_dualms = p["q"]
     logq = RR(log(q_dualms, 2))
     print("\nDualMS modulus q =", q_dualms, "logq = ", logq)
     print("l =", l, "l_prime =", l_prime, "k =", k)
 
-    phi = 22 * T
+    phi = p["phi"]
+    assert phi == max(22*T, 1100)
 
     b2KB = pow(2,13) #Convert bits to bytes
 
@@ -127,7 +139,7 @@ def main():
 
     B_zero = RR(sqrt(d*(l+k))*(eta_s*pow(w, kappa+1)+6*sigma_s*(kappa-1)*pow(w, kappa-1)))
     B_zero_prime = RR(sqrt(d*(l_prime+k))*(eta_prime_s*pow(w, kappa+1)+6*sigma_s_prime*(kappa-1)*pow(w, kappa-1)))
-    B_hat_0 = max(B_zero, B_zero_prime)
+    B_hat_0 = RR(sqrt(pow(B_zero, 2) + pow(B_zero_prime, 2)))
 
     B_z = RR(t*phi*B_zero*sqrt(d*l))
     B_tilde_z = RR(sqrt(T)*B_z)
@@ -148,15 +160,13 @@ def main():
 
     #MSIS bound for DualMS MSIS instance
     #Compression residual bound for kappa = 1 case only
-    if(compress_w):
-        B_eta_w = RR(pow(2, K_w0-1))
-        print("log2(k*B_eta_w) =", log((k*pow(B_eta_w,2)), 2)) #Need to compare other terms with k*pow(B_eta_w,2)
-        beta_sis = RR(sqrt(4*d*pow(B_det, 2)+ 4*d*pow((kappa+1),2)*(pow(B_Gamma,2)*(pow(B_tilde_z, 2)+pow(B_tilde_r, 2)+pow(B_tilde_e, 2)+k*pow(B_eta_w, 2)))))
-        total_width = 1+l+l_prime+2*k
-    else:
-        #k*pow(B_eta_w, 2) term missing when no compression on \tilde{w}_j0 done
-        beta_sis = RR(sqrt(4*d*pow(B_det, 2)+ 4*d*pow((kappa+1),2)*(pow(B_Gamma,2)*(pow(B_tilde_z, 2)+pow(B_tilde_r, 2)+pow(B_tilde_e, 2)))))
-        total_width = 1+l+l_prime+k
+    #l2 MSIS bound for the DualMS instance.  Informational only -- the ASIS/AMSIS
+    #run below is the authoritative DualMS-side number.  Call the finder rather
+    #than re-deriving beta_sis here, so the two can never drift apart again.
+    # beta_sis = setDualMSMSISBounds(T, kappa, d, w, k, l, l_prime, eta_s, eta_prime_s, t, logq, phi, K_w0, compress_w)
+    # print("log2(beta_sis) =", log(beta_sis, 2))
+    # _, l2_ok = setDualMSMSISRank(d, k, l, l_prime, RHF_max, logq, beta_sis, compress_w)
+    # print("l2-MSIS clears RHF_max:", l2_ok)
 
     #DualMS MLWE std deviation
     sigma_b0 = phi*B_zero
@@ -165,14 +175,14 @@ def main():
     sigma_tilde_e = phi*B_hat_0*sqrt(T)
 
     print("\n=== Binary Proof LWE Estimator ===")
-    bin_lwe_params = LWE.Parameters(n=(d*khat), q=qhat, Xs=ND.Uniform(-1,1), Xe=ND.DiscreteGaussian(sigma_zb))
+    bin_lwe_params = LWE.Parameters(n=(d*khat), q=qhat, Xs=ND.Uniform(-1,1), Xe=ND.Uniform(-1,1), m=(d*nhat))
     print(bin_lwe_params)
     results_bin_lwe = LWE.estimate.rough(bin_lwe_params)
     print(results_bin_lwe)
 
     print("\n\n=== Binary Proof ASIS Estimator ===")
-    attack_variant = 0
-    for attack_variant in [0]:
+    # Report all three bundled cost-model variants separately.
+    for attack_variant in [0, 1, 2]:
         # function below assumes B1>=B2>=B3>=B4>=B5
         print("***** Attack Variant", attack_variant, " *********")
         params = ASISParameterSet(d, m1+m2+m3+m4+m5, nhat, B1, B2, B3, B4, B5, m1, m2, m3, m4, m5, qhat, norm="linf")
@@ -184,7 +194,7 @@ def main():
 
 
     print("\n=== DualMS LWE Estimator ===")
-    dualms_lwe_params = LWE.Parameters(n=(d*l), q=q_dualms, Xs=ND.Uniform(-1,1), Xe=ND.DiscreteGaussian(sigma_b0))
+    dualms_lwe_params = LWE.Parameters(n=(d*l), q=q_dualms, Xs=ND.Uniform(-1,1), Xe=ND.Uniform(-1,1), m=(d*k))
     print(dualms_lwe_params)
     results_dualms_params = LWE.estimate.rough(dualms_lwe_params)
     print(results_dualms_params)
@@ -197,14 +207,14 @@ def main():
     # is the authoritative DualMS-side security number.
 
     print("\n\n=== DualMS ASIS Estimator ===")
-    arrDualMS = setDualMSASISBounds(T, kappa, d, w, k, l, l_prime, eta_s, eta_prime_s, t, logq, phi, K_w0, compress_w)
+    arrDualMS = setDualMSASISBounds(T, kappa, d, w, k, l, l_prime, eta_s, eta_prime_s, t, logq, phi, K_w0, compress_w, t_inf=p["tail_inf"])
     B1, m1 = arrDualMS[0]
     B2, m2 = arrDualMS[1]
     B3, m3 = arrDualMS[2]
     B4, m4 = arrDualMS[3]
     B5, m5 = arrDualMS[4]
 
-    for attack_variant in [0]:
+    for attack_variant in [0, 1, 2]:
         # function below assumes B1>=B2>=B3>=B4>=B5
         print("***** Attack Variant", attack_variant, " *********")
         params = ASISParameterSet(d, m1+m2+m3+m4+m5, k, B1, B2, B3, B4, B5, m1, m2, m3, m4, m5, q_dualms, norm="linf")
@@ -215,22 +225,26 @@ def main():
         print()
     
     sig_size = calculate_sig_size(kappa, beta, nhat, khat, k, l, l_prime, d, logq_hat, logq, K_b, K_w0, size_x, sigma_f, sigma_zb, sigma_tilde_z, sigma_tilde_r, sigma_tilde_e, compress_w)
-    print("\nSignature size:", RR(sig_size/b2KB), "KB\n")
+    print("\nSignature size:", RR(sig_size/b2KB), "KiB\n")
 
     size_single_pk, size_PK = calculate_PK(T, N, k, d, logq)
-    print("Single public key size:", RR(size_single_pk/b2KB), "KB\n")
-    print("Ring PK size:", RR(size_PK/b2KB), "KB\n")
+    print("Single public key size:", RR(size_single_pk/b2KB), "KiB\n")
+    print("Ring PK size:", RR(size_PK/b2KB), "KiB\n")
 
     number_lotrs_reps = number_reps(T, phi_a, phi_b, phi, nhat, d, w, K_a, K_b, K_w0, eps_total, compress_w)
     print("\nNumber of repetitions for rejection sampling:", number_lotrs_reps)
 
     print("\n\n=== Perform condition checks ===")
-    print("q_hat:", check_q_prime_5_mod_8(qhat), "\n")
-    print("q:", check_q_prime_5_mod_8(q_dualms), "\n")
-    checkChallengeDiff(qhat, q_dualms, x_inf_norm)
-    print("Regularity condition for sigma_s:", check_sigma(sigma_s, d, q_dualms, k, l))
-    print("Regularity condition for sigma_s_prime:", check_sigma(sigma_s_prime, d, q_dualms, k, l_prime), "\n")
-    checkRangeProofCondition(d, kappa, phi_a, w, qhat)
+    assert check_q_prime_5_mod_8(qhat)
+    assert check_q_prime_5_mod_8(q_dualms)
+    assert checkChallengeDiff(qhat, q_dualms, x_inf_norm)
+    reg_z = check_sigma(RR(phi*B_zero), d, q_dualms, k, l)
+    print("Regularity for sigma_0 :", reg_z)
+    assert reg_z
+    reg_r = check_sigma(RR(phi*B_zero_prime), d, q_dualms, k, l_prime)
+    print("Regularity for sigma_0':", reg_r)
+    assert reg_r
+    assert checkRangeProofCondition(d, kappa, phi_a, w, qhat, N)
 
     
 

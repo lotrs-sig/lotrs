@@ -288,7 +288,7 @@ def test_sagg_checks_all_pi_fields():
     states, all_coms = [], []
     for u in range(par.T):
         st, com = scheme.sign1(pp, all_sks[ell][u], u, ell, mu,
-                               pk_table, rho, 0)
+                               pk_table, rho, 0, bytes([u + 32]) * 32)
         states.append(st)
         all_coms.append(com)
 

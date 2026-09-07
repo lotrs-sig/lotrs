@@ -339,24 +339,13 @@ impl LoTRSCodec {
         let rice_zb = optimal_rice_k(par.sigma_b());
         let bound_zb = (6.0 * par.sigma_b()).ceil() as i64;
 
-        // e_tilde has effective width sigma_0 + sigma_0_prime
-        // (triangle inequality); see the matching note in lotrs.rs verify.
-        let sigma_z = par.sigma_0() * (par.T as f64).sqrt();
-        let sigma_r = par.sigma_0_prime() * (par.T as f64).sqrt();
-        let sigma_e = (par.sigma_0() + par.sigma_0_prime()) * (par.T as f64).sqrt();
-
-        let t = par.tail_t;
-        let rice_zt = optimal_rice_k(sigma_z);
-        let bound_zt = (t * par.sigma_0() * ((par.T * par.d * par.l) as f64).sqrt()).ceil() as i64;
-
-        let rice_rt = optimal_rice_k(sigma_r);
-        let bound_rt =
-            (t * par.sigma_0_prime() * ((par.T * par.d * par.l_prime) as f64).sqrt()).ceil() as i64;
-
-        let rice_et = optimal_rice_k(sigma_e);
-        let bound_et =
-            (t * (par.sigma_0() + par.sigma_0_prime()) * ((par.T * par.d * par.k) as f64).sqrt())
-                .ceil() as i64;
+        let rice_zt = optimal_rice_k(par.sigma_tilde_z());
+        let rice_rt = optimal_rice_k(par.sigma_tilde_r());
+        let rice_et = optimal_rice_k(par.sigma_tilde_e());
+        // A coefficient cannot exceed either of the verifier's bounds.
+        let bound_zt = par.B_tilde_z().min(par.B_tilde_z_inf()).floor() as i64;
+        let bound_rt = par.B_tilde_r().min(par.B_tilde_r_inf()).floor() as i64;
+        let bound_et = par.B_tilde_e().min(par.B_tilde_e_inf()).floor() as i64;
 
         Self {
             par,
